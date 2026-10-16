@@ -1,6 +1,7 @@
 # Dataset su filesystem: analisi di fattibilità e di impatto
 
-> Stato: **analisi**, nessuna modifica al codice. Riferimento: versione 2.0.1 (`master` @ `7eee4b7`).
+> Stato: **analisi con decisioni prese** (sezione 9), nessuna modifica al codice. Riferimento: versione 2.0.1
+> (`master` @ `7eee4b7`). Versione obiettivo: **2.2.0**.
 
 ## 1. Obiettivo
 
@@ -75,6 +76,24 @@ Due livelli: una **radice** legata al runtime e una **cartella del test**, relat
 | radice | `MockJdbcDriver.setTableRoot(File)`, oppure URL `jdbc::mock::/home/simonea/cliente1/unitTest/mockDB` / `jdbc::mock::C:\Dati\Cliente1\...` | URL della connessione, impostato con un'**estensione d'ambiente** sull'ambiente di test; in alternativa `-Dmockjdbc.root=...` nelle opzioni JVM del runtime o la variabile `MOCKJDBC_ROOT` | l'URL con percorso assoluto oggi dà errore, quindi l'estensione è retrocompatibile |
 | cartella del test | `MockJdbcDriver.setTableFolders("T_014", "_common")` | DPP `mockjdbc#FOLDER` = `T_014;_common` (stessa convenzione di `mockjdbc#RESET`) | percorsi relativi alla radice, oppure assoluti |
 
+**Precedenza della radice** (decisione 2: tutte e tre le fonti), dalla più specifica alla più generica:
+
+1. URL della connessione con percorso assoluto (vale solo per quella connessione);
+2. `MockJdbcDriver.setTableRoot(File)` (Java, per tutto il driver; azzerata da `reset()`);
+3. proprietà JVM `mockjdbc.root`;
+4. variabile d'ambiente `MOCKJDBC_ROOT`.
+
+**Quali cartelle si leggono:**
+
+* se è indicata una cartella del test (`mockjdbc#FOLDER` in Boomi, che ha precedenza, oppure `setTableFolders` in
+  Java), si leggono **solo** quelle cartelle, nell'ordine dato, relative alla radice se non assolute;
+* se non è indicata nessuna cartella ma c'è una radice, si legge la radice stessa: è lo stesso significato di oggi di
+  `jdbc::mock::<dir>`, dove i CSV stanno direttamente nella cartella;
+* una cartella relativa senza nessuna radice configurata è un errore (decisione 4).
+
+`jdbc::mock::<dir>` con percorso **relativo** mantiene il significato attuale (cartella del classpath), ma letta in
+modo lazy e con le stesse regole sui nomi file.
+
 Perché due livelli:
 
 * il processo di test Boomi contiene solo `T_014`, non `C:\Dati\...`: lo stesso test gira su un Atom Windows e su
@@ -100,22 +119,46 @@ viene decodificato e portato in minuscolo, ottenendo una mappa `nome risorsa →
 * l'indice può essere tenuto in cache e invalidato quando cambia il `lastModified` della cartella (aggiunta o
   rimozione di file); il **contenuto** viene invece sempre riletto, così i dati si modificano senza riavviare nulla.
 
-**Codifica dei caratteri non ammessi.** I nomi delle risorse possono contenere caratteri vietati su Windows: `?` (in
-`users?Smith`), `:` (negli orari dei parametri, formato `HH:mm`), `/`, `\`, `*`, `"`, `<`, `>`, `|`. Proposta: una sola
-codifica canonica, valida su entrambi i sistemi, con `%XX` (byte UTF-8) per quei caratteri, per `%` stesso, per i
-caratteri di controllo e per spazio o punto finali (che Windows elimina).
+**Separatore dei parametri: `?` oppure `@` (decisione 3).** `?` è vietato nei nomi file su Windows, quindi si
+introduce `@` come separatore alternativo, **equivalente ovunque**: in memoria, nei nomi file e nelle DPP.
+`users@Smith,34` e `users?Smith,34` sono la stessa risorsa.
+
+Perché `@` e non `§`:
+
+| | `@` | `§` |
+|-|-----|-----|
+| ammesso nei nomi file Windows, Linux, macOS | sì | sì |
+| ASCII (nessun problema di encoding tra filesystem, git, zip, locale del sistema, UI di Boomi) | sì | **no**: è fuori ASCII e su Linux con locale non UTF-8 o in uno zip può diventare illeggibile |
+| digitabile su tastiera italiana e americana | sì | solo italiana |
+| presente nei nomi di tabella | praticamente mai (in SQL Server `@t` è una variabile tabella, che non arriva al driver come `FROM @t` da Boomi) | mai |
+
+Regole:
+
+* il separatore è il **primo** `?` o `@` dopo il nome: i parametri possono contenere a loro volta `@` (es. un'email),
+  `users@mario@example.com` = tabella `users`, parametri `mario@example.com`;
+* in memoria la chiave viene normalizzata in inserimento e in lettura (`@` → `?` sul primo separatore), quindi
+  `addInMemoryTableResource("users@Smith", ...)` e una query con parametro `Smith` si trovano;
+* nelle DPP si prova prima la forma con `?`, poi quella con `@`, ognuna come scritta e poi in minuscolo
+  (`mockjdbc_users?Smith`, `mockjdbc_users?smith`, `mockjdbc_users@Smith`, `mockjdbc_users@smith`);
+* nei nomi file entrambe le forme sono accettate (su Windows si potrà usare solo `@`); due file che indicano la stessa
+  risorsa con separatori diversi sono una collisione e quindi un errore;
+* la cattura in uscita (`_PARAMS`) non cambia.
+
+**Caratteri residui.** Anche con `@` possono restare caratteri vietati su Windows, soprattutto nei valori dei
+parametri: `:` (negli orari, formato `HH:mm`), `/`, `\`, `*`, `"`, `<`, `>`, `|`. Solo per i **nomi file** questi
+si scrivono come `%XX` (byte UTF-8), insieme a `%` stesso, ai caratteri di controllo e a spazio o punto finali (che
+Windows elimina). È un caso raro: nei casi comuni il nome resta leggibile.
 
 | Risorsa | File |
 |---------|------|
 | `users` | `users.csv` (o `Users.csv`, `USERS.csv`) |
 | `users#2` | `users#2.csv` |
-| `users?Smith,34` | `users%3FSmith,34.csv` |
-| `users?Smith,34#2` | `users%3FSmith,34#2.csv` |
+| `users?Smith,34` | `users@Smith,34.csv` |
+| `users?Smith,34#2` | `users@Smith,34#2.csv` |
+| `events?10:30` | `events@10%3A30.csv` |
 | `##STEP3` | `##STEP3.csv` (contenuto `5` = 5 righe per `executeUpdate`) |
 | `-- TESTCASE: T_014a` | `T_014a.csv` |
 | `dbo.users` | `dbo.users.csv` |
-
-Poiché l'indice decodifica i nomi, su Linux funziona anche il file con `?` letterale: le due forme sono equivalenti.
 
 ### 4.3 Ordine di risoluzione unificato
 
@@ -123,7 +166,7 @@ Poiché l'indice decodifica i nomi, su Linux funziona anche il file con `?` lett
 provano tutte le fonti in ordine.
 
 ```
-nomi:   name?params#n → name?params → name#n → name
+nomi:   name?params#n → name?params → name#n → name        (`?` e `@` equivalenti)
 fonti:  memoria → DPP (come scritto, poi minuscolo) → cartelle del test (in ordine) → file registrati / jdbc::mock:: → /tables/
 ```
 
@@ -147,7 +190,7 @@ Separatore fisso `;`, perché `File.pathSeparator` è `:` su Linux e confligge c
 
 ### 4.6 Errori
 
-* Cartella indicata ma inesistente o non leggibile: **errore esplicito** (`SQLException` sulla query). Un harness
+* Cartella indicata ma inesistente o non leggibile (decisione 4): **errore esplicito** (`SQLException` sulla query). Un harness
   configurato male deve fallire, non restituire tabelle vuote.
 * Tabella non trovata: resta un result set vuoto (comportamento attuale), con il log dei tentativi.
 
@@ -163,7 +206,7 @@ Separatore fisso `;`, perché `File.pathSeparator` è `:` su Linux e confligge c
 │   │   ├── customers.csv
 │   │   └── customers#2.csv
 │   └── T_002_cliente_esistente/
-│       └── customers%3FC042.csv
+│       └── customers@C042.csv
 ```
 
 Processo di test:
@@ -194,10 +237,11 @@ Stima: circa 400–600 righe di codice più i test; nessuna nuova dipendenza.
 
 ### Compatibilità (cambi di comportamento)
 
-1. **Priorità file/memoria**: oggi un file registrato vince su memoria, DPP e varianti `#n`/`?`. Con l'ordine
-   unificato vincono memoria/DPP e la specificità del nome. È un cambio, ma allinea il codice alla sezione 10 di
-   FEATURES.md. Nessun test esistente verifica "il file vince". Alternativa: applicare il nuovo ordine solo alle nuove
-   cartelle.
+1. **Priorità file/memoria** (decisione 1: nuovo ordine per tutte le fonti): oggi un file registrato vince su memoria,
+   DPP e varianti `#n`/`?`. Con l'ordine unificato vincono memoria/DPP e la specificità del nome. Il risultato cambia
+   solo se lo stesso nome è definito sia su file sia in memoria/DPP, configurazione che oggi non ha senso perché il
+   dato in memoria viene ignorato. Il nuovo ordine allinea il codice alla sezione 10 di FEATURES.md e nessun test
+   esistente verifica "il file vince". Va comunque scritto nel CHANGELOG e chiude FUTURE.md, punto 8.
 2. **Encoding**: UTF-8 per default anche per `addTableResource` / `/tables/` / `jdbc::mock::` romperebbe chi usa file
    in windows-1252 su un Atom Windows. Proposta: UTF-8 solo per la nuova fonte, charset configurabile per tutte, e
    cambio del default rimandato a una major.
@@ -205,8 +249,12 @@ Stima: circa 400–600 righe di codice più i test; nessuna nuova dipendenza.
    È un miglioramento, senza rischi pratici.
 4. **`jdbc::mock::` case-insensitive**: `Users.csv` diventa visibile; prima era ignorato. Correzione di un bug.
 
-Versione suggerita: **2.1.0** se si accettano i punti 1 e 3–4 come correzioni, **3.0.0** se si preferisce trattare il
-punto 1 come breaking.
+5. **Separatore `@`**: una chiave in memoria o una DPP che contiene già `@` dopo il nome (es. `-- TESTCASE: a@b`)
+   viene ora letta come "risorsa `a` con parametri `b`". La normalizzazione è simmetrica, quindi `a@b` registrato e
+   `a@b` cercato continuano a trovarsi; cambia solo che diventa equivalente anche ad `a?b`.
+
+Versione (decisione 5): **2.2.0**, nuove funzioni senza rotture di compatibilità. `VERSION_MINOR` passa a 2 e la
+metadata del driver riporta `2.2`. Nota: non esiste una 2.1.0 (ultimo tag `mockjdbc-2.0.1`).
 
 ### Documentazione
 
@@ -219,7 +267,9 @@ Tutti eseguibili nella CI Linux attuale:
 
 * parità: ogni riga della tabella della sezione 2 con dati su file;
 * case-insensitive su Linux, collisioni `Users.csv` / `users.csv`;
-* codifica `%3F`, `%3A`, nomi con `#` e `.`;
+* separatore `@` equivalente a `?` in memoria, DPP e file, parametri che contengono `@`, collisione
+  `users?x.csv` / `users@x.csv`;
+* codifica `%3A` e degli altri caratteri residui, nomi con `#` e `.`;
 * priorità memoria > DPP > cartella > file registrati, cartelle a strati;
 * BOM e charset;
 * Boomi: `mockjdbc#FOLDER` con `FakeExecutionUtil`, cambio cartella a metà esecuzione;
@@ -240,12 +290,17 @@ Da verificare manualmente su un Atom Windows: percorsi UNC, utente del servizio,
 * **CSV da Excel**: oltre al BOM, Excel con impostazioni italiane salva con `;` come separatore, mentre la libreria
   usa `,`. Un separatore configurabile sarebbe un'estensione naturale, ma è fuori da questo perimetro.
 
-## 8. Decisioni aperte
+## 8. Fuori perimetro, per dopo
 
-1. Ordine unificato (specificità prima della fonte) per **tutte** le fonti di file o solo per le nuove cartelle?
-2. Radice: URL di connessione, proprietà JVM / variabile d'ambiente, o tutte e tre (con quale precedenza)?
-3. Codifica `%XX` canonica: va bene, o si preferisce un carattere sostitutivo più leggibile per `?`?
-4. Cartella mancante: errore (proposto) o solo log?
-5. Versione: 2.1.0 o 3.0.0?
-6. In un secondo tempo: valori attesi su file (es. `customers_PARAMS.expected`) letti dall'harness? Oggi fuori
-   perimetro, ma lo stesso indice potrebbe servire.
+* Valori attesi su file (es. `customers_PARAMS.expected`) letti dall'harness: lo stesso indice potrebbe servire.
+* Separatore CSV configurabile (`;` di Excel con impostazioni italiane).
+
+## 9. Decisioni
+
+| # | Tema | Decisione |
+|---|------|-----------|
+| 1 | Ordine unificato (specificità del nome, poi fonte) | per **tutte** le fonti, incluse `addTableResource`, `jdbc::mock::` e `/tables/` |
+| 2 | Radice | **tutte e tre** le fonti: URL > `setTableRoot` > `-Dmockjdbc.root` > `MOCKJDBC_ROOT` (sezione 4.1) |
+| 3 | Leggibilità dei nomi | `@` come separatore alternativo a `?`, equivalente in memoria, file e DPP; `%XX` solo per i caratteri residui nei nomi file (sezione 4.2) |
+| 4 | Cartella mancante o non leggibile | **errore** |
+| 5 | Versione | **2.2.0** |
