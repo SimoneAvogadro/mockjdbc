@@ -571,9 +571,8 @@ In Boomi the driver runs from a **Custom Library** component that holds three ja
 #### Setting up the Custom Library
 
 1. **Download the jars**:
-   * [mockjdbc-2.0.1.jar](https://github.com/SimoneAvogadro/mockjdbc/releases/download/mockjdbc-2.0.1/mockjdbc-2.0.1.jar)
-     (other versions on the [releases](https://github.com/SimoneAvogadro/mockjdbc/releases) page, or build it with
-     `mvn package`);
+   * `mockjdbc-<version>.jar` from the [releases](https://github.com/SimoneAvogadro/mockjdbc/releases) page (the
+     latest release is at the top; or build it with `mvn package`);
    * [opencsv-2.3.jar](https://repo1.maven.org/maven2/net/sf/opencsv/opencsv/2.3/opencsv-2.3.jar);
    * [aspectjrt-1.9.22.1.jar](https://repo1.maven.org/maven2/org/aspectj/aspectjrt/1.9.22.1/aspectjrt-1.9.22.1.jar).
 2. **Upload them to the Account Libraries** (Settings > Account Libraries, then **Upload a File**). You need the

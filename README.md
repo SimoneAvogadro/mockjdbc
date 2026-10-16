@@ -4,7 +4,8 @@
 > **mockjdbc** is the new name of this fork of [dummyjdbc](https://github.com/kaiwinter/dummyjdbc), the original project
 > by Kai Winter.
 
-**Current version: 2.0.1** – see the [CHANGELOG](CHANGELOG.md).
+**Current version: 2.1.0** – see the [CHANGELOG](CHANGELOG.md); download it from the
+[releases](https://github.com/SimoneAvogadro/mockjdbc/releases) page (the latest release is at the top).
 
 mockjdbc is a JDBC driver that never talks to a real database. Your code – or your **Boomi process** – runs its SQL as
 usual and gets back the data you prepared as CSV, while every INSERT, UPDATE, DELETE and stored procedure call is
