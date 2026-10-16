@@ -36,7 +36,7 @@ implemented yet**. Each item says what is missing today and what a change would 
 ### 4. Explicit charset for `InputStream` resources
 
 * **Today:** `addInMemoryTableResource(String, InputStream)` and `addInMemoryTableResource(int, InputStream)` read the stream
-  with the default charset of the VM, like CSV files.
+  with the default charset of the VM (files have `setTableCharset` since 2.1.0).
 * **Idea:** add overloads taking a `Charset` for streams whose encoding differs from the VM default.
 
 ## Resources and connections
@@ -49,25 +49,12 @@ implemented yet**. Each item says what is missing today and what a change would 
 * **Idea:** return a `CallableStatement` built on `CsvPreparedStatement` (same lookup and parameter capture), with OUT
   parameters registered and read back from the CSV result or from dedicated resources.
 
-### 6. Database directories loaded lazily
-
-* **Today:** for `jdbc::mock::<dir>` URLs the CSV files are read when `connect()` is called. After `reset()`, a connection
-  that is already open no longer sees those tables (new connections reload them).
-* **Idea:** look up the directory on demand (or re-register it after `reset()`) so open connections keep working.
-
 ### 7. Table-name detection for INSERT/UPDATE/DELETE
 
 * **Today:** the table of an `INSERT INTO <table> (` / `UPDATE <table>` is matched with letters only (`[a-zA-Z]`), so names
   containing digits or underscores (`user_roles`, `table2`) are not captured under `<table>_PARAMS`; a `-- TESTCASE:` comment
   is needed.
 * **Idea:** accept `[A-Za-z0-9_$.]` (and schema-qualified names), with tests for each form.
-
-### 8. Precedence between files and in-memory resources
-
-* **Today:** if both a registered file and an in-memory resource exist for the same name, the **file wins**
-  (step resources always win over both).
-* **Idea:** decide whether in-memory should override files, since it is registered closer to the test; document the
-  decision either way.
 
 ## Boomi runtime
 

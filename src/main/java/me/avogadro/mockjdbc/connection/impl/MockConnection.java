@@ -25,6 +25,9 @@ public class MockConnection extends ConnectionAdapter {
 
 	private final String url;
 
+	/** folder of the connection URL (<code>jdbc::mock::&lt;dir&gt;</code>), root of the table folders, may be null */
+	private final File connectionRoot;
+
 	/**
 	 * Constructs a new {@link MockConnection}.
 	 * @param tableResources {@link Map} of table name to CSV file.
@@ -39,7 +42,18 @@ public class MockConnection extends ConnectionAdapter {
 	 * @param url the JDBC URL used to open the connection
 	 */
 	public MockConnection(Map<String, File> tableResources, String url) {
+		this(tableResources, url, null);
+	}
+
+	/**
+	 * Constructs a new {@link MockConnection}.
+	 * @param tableResources {@link Map} of table name to CSV file.
+	 * @param url the JDBC URL used to open the connection
+	 * @param connectionRoot folder of the connection URL, root of the table folders, may be <code>null</code>
+	 */
+	public MockConnection(Map<String, File> tableResources, String url, File connectionRoot) {
 		this.url = url == null ? "" : url;
+		this.connectionRoot = connectionRoot;
 		if (tableResources == null) {
 			this.tableResources = Collections.emptyMap();
 		} else {
@@ -58,8 +72,13 @@ public class MockConnection extends ConnectionAdapter {
 	}
 
 	@Override
+	protected File getConnectionRoot() {
+		return connectionRoot;
+	}
+
+	@Override
 	public Statement createStatement() throws SQLException {
-		return new CsvStatement(tableResources);
+		return new CsvStatement(tableResources, connectionRoot);
 	}
 
 	@Override
@@ -74,7 +93,7 @@ public class MockConnection extends ConnectionAdapter {
 
 	@Override
 	public PreparedStatement prepareStatement(String sql) throws SQLException {
-		return new CsvPreparedStatement(tableResources, sql);
+		return new CsvPreparedStatement(tableResources, sql, connectionRoot);
 	};
 
 	@Override

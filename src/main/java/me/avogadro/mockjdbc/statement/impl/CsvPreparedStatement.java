@@ -72,7 +72,19 @@ public class CsvPreparedStatement extends PreparedStatementAdapter {
 	 *            the SQL statement.
 	 */
 	public CsvPreparedStatement(Map<String, File> tableResources, String sql) {
-		this.statement = new CsvStatement(tableResources);
+		this(tableResources, sql, null);
+	}
+
+	/**
+	 * Constructs a new {@link CsvPreparedStatement}.
+	 *
+	 * @param tableResources {@link Map} of table name to CSV file.
+	 * @param sql
+	 *            the SQL statement.
+	 * @param connectionRoot folder of the connection URL, root of the table folders, may be <code>null</code>
+	 */
+	public CsvPreparedStatement(Map<String, File> tableResources, String sql, File connectionRoot) {
+		this.statement = new CsvStatement(tableResources, connectionRoot);
 		this.sql = sql;
 	}
 
@@ -94,7 +106,7 @@ public class CsvPreparedStatement extends PreparedStatementAdapter {
 		}
 		try {
 			int res = 1;
-			String stepRes = MockJdbcDriver.getInMemoryTableResourceForCurrentStep();
+			String stepRes = statement.findStepResource();
 			
 			if (stepRes!=null) {
 				targetTable4Updates = MockJdbcDriver.getStepName();

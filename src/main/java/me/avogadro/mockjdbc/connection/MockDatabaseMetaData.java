@@ -50,6 +50,7 @@ public class MockDatabaseMetaData implements DatabaseMetaData {
     private final Connection connection;
     private final String url;
     private final Map<String, File> tableResources;
+    private final File connectionRoot;
 
     /**
      * @param connection the connection these metadata belong to
@@ -57,9 +58,21 @@ public class MockDatabaseMetaData implements DatabaseMetaData {
      * @param tableResources the CSV files registered for the tables of the connection
      */
     public MockDatabaseMetaData(Connection connection, String url, Map<String, File> tableResources) {
+        this(connection, url, tableResources, null);
+    }
+
+    /**
+     * @param connection the connection these metadata belong to
+     * @param url the JDBC URL used to open the connection
+     * @param tableResources the CSV files registered for the tables of the connection
+     * @param connectionRoot folder of the connection URL, root of the table folders, may be <code>null</code>
+     */
+    public MockDatabaseMetaData(Connection connection, String url, Map<String, File> tableResources,
+            File connectionRoot) {
         this.connection = connection;
         this.url = url == null ? "" : url;
         this.tableResources = tableResources == null ? Collections.<String, File>emptyMap() : tableResources;
+        this.connectionRoot = connectionRoot;
     }
 
     /**
@@ -576,7 +589,7 @@ public class MockDatabaseMetaData implements DatabaseMetaData {
 
     /**
      * One row per column of the CSV header of the table, found as for a <code>SELECT * FROM table</code> (in-memory
-     * resource, Boomi Dynamic Process Property, registered file or <code>/tables/</code>). Catalog and schema are
+     * resource, Boomi Dynamic Process Property, table folder, registered file or <code>/tables/</code>). Catalog and schema are
      * ignored; the table name must be exact (case insensitive), the column pattern supports <code>%</code> and
      * <code>_</code>.
      */
@@ -585,7 +598,7 @@ public class MockDatabaseMetaData implements DatabaseMetaData {
         List<LinkedHashMap<String, String>> rows = new ArrayList<LinkedHashMap<String, String>>();
         String tableName = tableNamePattern == null ? "" : tableNamePattern.trim();
         if (!tableName.isEmpty() && !"%".equals(tableName)) {
-            ResultSetMetaData table = CsvStatement.loadTable(tableResources, tableName).getMetaData();
+            ResultSetMetaData table = CsvStatement.loadTable(tableResources, connectionRoot, tableName).getMetaData();
             int columnCount = table == null ? 0 : table.getColumnCount();
             Pattern columnPattern = likePattern(columnNamePattern);
             for (int i = 1; i <= columnCount; i++) {

@@ -1,9 +1,9 @@
 package me.avogadro.mockjdbc;
 
 import java.io.File;
-import java.io.FileFilter;
 import java.io.InputStream;
 import java.net.URL;
+import java.nio.charset.Charset;
 import java.sql.Connection;
 import java.sql.Driver;
 import java.sql.DriverManager;
@@ -12,8 +12,10 @@ import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Scanner;
@@ -21,7 +23,8 @@ import java.util.logging.Logger;
 
 import me.avogadro.mockjdbc.boomi.BoomiExecutionUtil;
 import me.avogadro.mockjdbc.connection.impl.MockConnection;
-import me.avogadro.mockjdbc.utils.FilenameUtils;
+import me.avogadro.mockjdbc.resources.ResourceNames;
+import me.avogadro.mockjdbc.resources.TableLookup;
 import me.avogadro.mockjdbc.utils.StringUtils;
 
 /**
@@ -42,7 +45,7 @@ public final class MockJdbcDriver implements Driver {
 
 	/** Version of the driver, also reported by the database metadata */
 	public static final int VERSION_MAJOR = 2;
-	public static final int VERSION_MINOR = 0;
+	public static final int VERSION_MINOR = 1;
 	
 	/** Separator of the occurrence number in resource names: <code>users#2</code> is the second use of <code>users</code> */
 	public static final String OCCURRENCE_SEPARATOR = "#";
@@ -123,6 +126,15 @@ public final class MockJdbcDriver implements Driver {
 
 	private static Map<String, Map<String, File>> tableResources = Collections.synchronizedMap(new HashMap<String, Map<String, File>>());
 
+	/** root of the table folders set from Java, see {@link #setTableRoot(File)} */
+	private static volatile File tableRoot;
+
+	/** table folders set from Java, see {@link #setTableFolders(String...)} */
+	private static volatile List<String> tableFolders = Collections.emptyList();
+
+	/** charset of the CSV files set from Java, see {@link #setTableCharset(Charset)} */
+	private static volatile Charset tableCharset;
+
 	static {
 		// Inside Boomi the driver is instantiated by class name and connect() is called directly: no registration in
 		// DriverManager, which would keep the driver's class loader (and the jars of its library) in use forever.
@@ -147,11 +159,15 @@ public final class MockJdbcDriver implements Driver {
 	}
 	
 	/**
-	 * Reset the internal data structures to restart counting
+	 * Reset the internal data structures to restart counting: counters, in-memory resources, registered files, table
+	 * root, table folders and charset
 	 */
 	public static void reset() {
 		resetCounters();
 		inMemoryTableResources = new HashMap<String,String>();
+		tableRoot = null;
+		tableFolders = Collections.emptyList();
+		tableCharset = null;
 		// keep the per-database maps (connections hold a reference to them), just empty them
 		synchronized (tableResources) {
 			for (Map<String, File> databaseMap : tableResources.values()) {
@@ -255,8 +271,75 @@ public final class MockJdbcDriver implements Driver {
 		} else {
 			databaseMap = Collections.synchronizedMap(new HashMap<String, File>());
 		}
-		databaseMap.put(tablename.toLowerCase(), csvFile);
+		databaseMap.put(ResourceNames.key(tablename), csvFile);
 		tableResources.put(DEFAULT_DATABASE, databaseMap);
+	}
+
+	/**
+	 * Sets the root of the table folders for all the connections: the folders of {@link #setTableFolders(String...)}
+	 * and of the Boomi Dynamic Process Property <code>mockjdbc#FOLDER</code> are relative to it, and with no folder the
+	 * root itself is read. A connection URL with an absolute folder (<code>jdbc::mock::/data/mockdb</code>) wins over
+	 * it; when not set, the system property {@value TableLookup#ROOT_SYSTEM_PROPERTY} and then the environment variable
+	 * {@value TableLookup#ROOT_ENVIRONMENT_VARIABLE} are used. Cleared by {@link #reset()}.
+	 *
+	 * @param root the root folder, <code>null</code> to clear it
+	 */
+	public static void setTableRoot(File root) {
+		tableRoot = root;
+	}
+
+	/**
+	 * @return the root set with {@link #setTableRoot(File)}, or <code>null</code>
+	 */
+	public static File getTableRoot() {
+		return tableRoot;
+	}
+
+	/**
+	 * Sets the folders the CSV files are read from, in order: a table is looked up in the first folder, then in the
+	 * next ones (e.g. the folder of the test, then a folder of common tables). Relative folders are resolved against
+	 * the root (see {@link #setTableRoot(File)}). Each file is a resource: <code>users.csv</code>,
+	 * <code>users#2.csv</code>, <code>users@Smith,34.csv</code>, <code>##STEP0.csv</code>, names case-insensitive.
+	 * Inside Boomi the Dynamic Process Property <code>mockjdbc#FOLDER</code> wins over these folders. Cleared by
+	 * {@link #reset()}.
+	 *
+	 * @param folders the folders, none to clear them
+	 */
+	public static void setTableFolders(String... folders) {
+		List<String> list = new ArrayList<String>();
+		if (folders != null) {
+			for (String folder : folders) {
+				if (folder != null && !folder.trim().isEmpty()) {
+					list.add(folder.trim());
+				}
+			}
+		}
+		tableFolders = Collections.unmodifiableList(list);
+	}
+
+	/**
+	 * @return the folders set with {@link #setTableFolders(String...)}, possibly empty
+	 */
+	public static List<String> getTableFolders() {
+		return tableFolders;
+	}
+
+	/**
+	 * Sets the charset of all the CSV files (table folders, registered files, <code>/tables/</code>). When not set the
+	 * table folders are read as UTF-8 and the other files with the default charset of the VM. Inside Boomi the Dynamic
+	 * Process Property <code>mockjdbc#CHARSET</code> wins. Cleared by {@link #reset()}.
+	 *
+	 * @param charset the charset, <code>null</code> for the default
+	 */
+	public static void setTableCharset(Charset charset) {
+		tableCharset = charset;
+	}
+
+	/**
+	 * @return the charset set with {@link #setTableCharset(Charset)}, or <code>null</code>
+	 */
+	public static Charset getTableCharset() {
+		return tableCharset;
 	}
 
 
@@ -286,7 +369,7 @@ public final class MockJdbcDriver implements Driver {
 	public Connection connect(String url, Properties info) throws SQLException {
 		String database = parseConnectUrl(url);
 
-		loadTableResources(database);
+		File connectionRoot = connectionRoot(database);
 
 		// Hand over a map that is registered in the driver, so tables added after connecting are visible
 		Map<String, File> databaseMap;
@@ -298,7 +381,7 @@ public final class MockJdbcDriver implements Driver {
 			}
 		}
 
-		return new MockConnection(databaseMap, url);
+		return new MockConnection(databaseMap, url, connectionRoot);
 	}
 
 	@Override
@@ -366,14 +449,25 @@ public final class MockJdbcDriver implements Driver {
 	}
 
 	/**
-	 * load table resources from database directory
+	 * The folder of a <code>jdbc::mock::&lt;dir&gt;</code> URL, read on every query (so tables added later and open
+	 * connections after {@link #reset()} keep working): an absolute folder on the filesystem, or a directory of the
+	 * classpath.
 	 *
 	 * @param database database path
+	 * @return the folder, <code>null</code> for the default database
+	 * @throws SQLException if an absolute folder does not exist or cannot be read
 	 */
-	private void loadTableResources(String database) {
-		// ignore database name is any
+	private File connectionRoot(String database) throws SQLException {
 		if (DEFAULT_DATABASE.equals(database)) {
-			return;
+			return null;
+		}
+
+		File folder = new File(database);
+		if (folder.isAbsolute()) {
+			if (!folder.isDirectory() || !folder.canRead()) {
+				throw new SQLException("mockjdbc: the database folder " + folder + " does not exist or cannot be read");
+			}
+			return folder;
 		}
 
 		// check database is exists
@@ -386,26 +480,7 @@ public final class MockJdbcDriver implements Driver {
 		if (!dir.canRead() || !dir.isDirectory()) {
 			throw new RuntimeException("The database directory is not a directory or cannot read");
 		}
-
-		// get all table files
-		File[] files = dir.listFiles(new FileFilter() {
-
-			@Override
-			public boolean accept(File pathname) {
-				return pathname.isFile() && FilenameUtils.isExtension(pathname.getName(), "csv");
-			}
-
-		});
-
-		// registry table resources
-		for (File file : files) {
-			Map<String, File> databaseMap = tableResources.get(database);
-			if (databaseMap == null) {
-				databaseMap = Collections.synchronizedMap(new HashMap<String, File>());
-				tableResources.put(database, databaseMap);
-			}
-			databaseMap.put(FilenameUtils.getBaseName(file.getName()), file);
-		}
+		return dir;
 	}
 
 
@@ -417,7 +492,7 @@ public final class MockJdbcDriver implements Driver {
 	 * @return
 	 */
 	public static String getInMemoryTableResource(String testID) {
-		String value = inMemoryTableResources.get(testID.toLowerCase().trim());
+		String value = inMemoryTableResources.get(ResourceNames.key(testID));
 		if (value == null) {
 			value = BoomiExecutionUtil.getResourceProperty(testID);
 		}
@@ -455,7 +530,7 @@ public final class MockJdbcDriver implements Driver {
 	 * @param value
 	 */
 	public static void addInMemoryTableResource(String testID, String value) {
-		inMemoryTableResources.put(testID.toLowerCase().trim(), value.trim());
+		inMemoryTableResources.put(ResourceNames.key(testID), value.trim());
 	}
 
 	/**

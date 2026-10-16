@@ -86,7 +86,7 @@ public class ConnectionAdapter implements Connection {
 
 	@Override
 	public DatabaseMetaData getMetaData() throws SQLException {
-		return new MockDatabaseMetaData(this, getConnectionUrl(), getTableResources());
+		return new MockDatabaseMetaData(this, getConnectionUrl(), getTableResources(), getConnectionRoot());
 	}
 
 	/**
@@ -94,6 +94,14 @@ public class ConnectionAdapter implements Connection {
 	 */
 	protected Map<String, File> getTableResources() {
 		return Collections.emptyMap();
+	}
+
+	/**
+	 * @return the folder of the connection URL, root of the table folders, used by {@link #getMetaData()}; may be
+	 *         <code>null</code>
+	 */
+	protected File getConnectionRoot() {
+		return null;
 	}
 
 	/**

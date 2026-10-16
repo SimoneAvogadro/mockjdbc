@@ -143,6 +143,12 @@ Lookup order for the query above (always case-insensitive):
 Parameters are rendered with `toString()`. `Date`, `Time` and `Timestamp` use the formats described in
 [section 9](#dates-and-times).
 
+**`@` instead of `?`.** `@` is an alternative separator, equivalent everywhere (in memory, in files and in Boomi Dynamic
+Process Properties): `mytable@Smith,34` and `mytable?Smith,34` are the same resource. It exists because `?` cannot be
+used in Windows file names (`mytable@Smith,34.csv`, see [section 7](#c-table-folders-any-folder-on-disk)). Only the
+first `?` or `@` after the name separates the parameters, so the parameters themselves can contain `@`
+(`users@mario@example.com` = table `users`, parameters `mario@example.com`).
+
 ---
 
 ## 5. Step-based results (a scripted sequence)
@@ -243,7 +249,7 @@ Assert.assertEquals("hello,30", params);
 
 ## 7. Datasets on file
 
-For larger or shared data, keep the CSV in a file. There are three ways to wire files in.
+For larger or shared data, keep the CSV in files. There are four ways to wire files in.
 
 ### a) Register a file for a table
 
@@ -265,31 +271,108 @@ ID, country_name, country_iso
 ```
 
 Table names are matched case-insensitively, and you can register as many tables as you need by calling
-`addTableResource` repeatedly. Tables can also be registered after the connection has been opened, and
-`MockJdbcDriver.reset()` does not detach connections that are already open.
+`addTableResource` repeatedly. The name can be any resource name, also `users#2` or `users@Smith`. Tables can also be
+registered after the connection has been opened, and `MockJdbcDriver.reset()` does not detach connections that are
+already open.
 
 ### b) The `/tables/` classpath folder (zero setup)
 
-If nothing else matches, the driver looks for `/tables/<tablename>.csv` on the classpath
-(e.g. `src/test/resources/tables/users.csv` for `SELECT * FROM users`). No Java code needed.
+If nothing else matches, the driver looks for `/tables/<name>.csv` on the classpath
+(e.g. `src/test/resources/tables/users.csv` for `SELECT * FROM users`). No Java code needed. The name is in lower
+case, and every variant works: `users#2.csv`, `users@smith,34.csv`.
 
 The `tables/` folder can be in a directory of the classpath or **inside a jar** (e.g. a jar of test data next to the
-driver, the only option in runtimes such as Boomi). The file is looked up with the driver's class loader, the table
-name in lower case, and read with the default charset of the VM; a jar is read without caching, so it is not kept open.
+driver, the only option in runtimes such as Boomi). The file is looked up with the driver's class loader, and read with
+the default charset of the VM (see [Encoding](#encoding-of-the-files)); a jar is read without caching, so it is not kept
+open.
 
-### c) A directory per "database"
+### c) Table folders (any folder on disk)
+
+Keep the data of each test in a folder of the filesystem, e.g. `C:\Data\Customer1\ProjectA\MockDB` or
+`/home/me/customer1/mockDB`, and tell the driver which folders to read:
+
+```java
+MockJdbcDriver.reset();
+MockJdbcDriver.setTableRoot(new File("/home/me/customer1/mockDB"));
+MockJdbcDriver.setTableFolders("T_001_new_customer", "_common");   // relative to the root, in this order
+
+ResultSet rs = DriverManager.getConnection("any").createStatement()
+        .executeQuery("SELECT * FROM customers");                    // T_001_new_customer/customers.csv
+```
+
+```
+mockDB/                              <- root
+├── _common/
+│   └── countries.csv                <- used by every test that lists _common
+├── T_001_new_customer/
+│   ├── customers.csv
+│   └── customers#2.csv              <- second query on customers
+└── T_002_existing_customer/
+    └── customers@C042.csv           <- query with the parameter C042
+```
+
+**Every file is a resource**, with the same names as in memory, compared case-insensitively on every operating system:
+
+| Resource | File |
+|----------|------|
+| table `users` (also `-- TESTCASE:` names and procedures) | `users.csv`, `Users.csv`, `USERS.CSV` |
+| `users#2` ([section 5](#repeated-use-of-the-same-resource-users1-users2)) | `users#2.csv` |
+| `users?Smith,34` ([section 4](#4-different-results-for-different-parameters)) | `users@Smith,34.csv` |
+| `users?Smith,34#2` | `users@Smith,34#2.csv` |
+| step 3 ([section 5](#5-step-based-results-a-scripted-sequence)) | `##STEP3.csv` (a plain number is the row count of `executeUpdate`) |
+| `dbo.users` | `dbo.users.csv` |
+
+Characters that Windows does not allow in file names (`\ / : * ? " < > |`), `%` itself, control characters and a
+final dot are written as `%XX` (UTF-8 bytes): a time parameter `events?10:30` is the file `events@10%3A30.csv`. On Linux
+`users?Smith.csv` also works, as the same resource as `users@Smith.csv`.
+
+**Which folders are read.** The **root** is the first one set among:
+
+1. the folder of the connection URL, when it is absolute (`jdbc::mock::/home/me/mockDB`, `jdbc::mock::C:\Data\MockDB`,
+   see [section 8](#8-several-databases-with-jdbc-urls)), for that connection only;
+2. `MockJdbcDriver.setTableRoot(File)`;
+3. the Java system property `mockjdbc.root` (`-Dmockjdbc.root=/srv/mockdb`);
+4. the environment variable `MOCKJDBC_ROOT`.
+
+The **folders** are those of `MockJdbcDriver.setTableFolders(...)` (inside Boomi the Dynamic Process Property
+`mockjdbc#FOLDER` wins, see [section 11](#tables-from-folders)): relative ones are resolved against the root, absolute
+ones are used as they are, and a table is looked up in each folder in order. With no folder, the root itself is read.
+
+* The folders are listed again by every query: files can be added or changed while the tests run, nothing is cached and
+  no file is kept open.
+* A folder that does not exist or cannot be read, a relative folder with no root, and two files for the same resource
+  (`Users.csv` and `users.csv` on Linux, `users?x.csv` and `users@x.csv`) are **errors**: the query fails with an
+  `SQLException` that names them.
+* Writes are still captured only in memory and in Boomi properties ([section 6](#6-capturing-statement-parameters)):
+  nothing is ever written to the folders.
+* `reset()` clears the root, the folders and the charset set from Java.
+
+### d) A directory per "database"
 
 See the next section.
 
-If both a file and an in-memory resource exist for the same name, the **file wins**.
-Step resources ([section 5](#5-step-based-results-a-scripted-sequence)) always win over both.
+### Which source wins
+
+For each name, from the most specific to the most generic (`users?Smith#2`, `users?Smith`, `users#2`, `users`), the
+sources are tried in this order: in memory, Boomi Dynamic Process Property, table folders, registered files,
+`/tables/`. So a more specific name always wins (a `users#2.csv` is used for the second query even if `users` is
+defined in memory), and among equally specific names memory wins over files: a test can override a single table of a
+folder.
+
+### Encoding of the files
+
+Files in table folders are read as **UTF-8**; registered files and `/tables/` with the default charset of the VM, as in
+previous versions. A UTF-8 byte order mark (added by Excel and Notepad) is ignored. To use another charset for all the
+files call `MockJdbcDriver.setTableCharset(Charset)` (inside Boomi: Dynamic Process Property `mockjdbc#CHARSET`, e.g.
+`windows-1252`).
 
 ---
 
 ## 8. Several "databases" with JDBC URLs
 
-Use a URL of the form `jdbc::mock::<dir>[::<subdir>...]` to point to a **classpath directory**.
-Every `*.csv` file in it becomes a table (file name without extension = table name):
+Use a URL of the form `jdbc::mock::<dir>[::<subdir>...]` to point to a **classpath directory**, or
+`jdbc::mock::<absolute folder>` to point to a folder of the filesystem.
+Every `*.csv` file in it becomes a table, with the names of [section 7](#c-table-folders-any-folder-on-disk):
 
 ```
 src/test/resources/
@@ -300,11 +383,16 @@ src/test/resources/
 ```java
 Connection c = DriverManager.getConnection("jdbc::mock::database");
 ResultSet rs = c.prepareStatement("SELECT * FROM test_table").executeQuery();
+
+Connection d = DriverManager.getConnection("jdbc::mock::/srv/mockdb");    // or jdbc::mock::C:\Data\MockDB
 ```
 
-* `jdbc::mock::a::b` maps to the directory `a/b`.
+* `jdbc::mock::a::b` maps to the classpath directory `a/b`.
 * Different URLs give you different, independent sets of tables (e.g. one per simulated database).
-* A missing directory raises a `RuntimeException`.
+* The folder of the URL is the **root** of the table folders of that connection: with `setTableFolders` (or, in Boomi,
+  `mockjdbc#FOLDER`) the folders are relative to it, without them the folder itself is read.
+* The folder is read on every query, so files added later are found and `reset()` does not affect open connections.
+* A missing classpath directory raises a `RuntimeException`, a missing absolute folder an `SQLException`.
 
 ---
 
@@ -433,9 +521,10 @@ For each executed query the driver tries, in this order:
 5. **Pure `SELECT`** without a table: one row with value `1`.
 6. Otherwise an empty result set.
 
-For a given name used for the n-th time, the data source is chosen as: `name?params#n` → `name?params` → `name#n` →
-`name` (in memory) → registered file → `/tables/name.csv`. Inside Boomi, each in-memory lookup that finds nothing also checks the matching Dynamic Process Property
-([section 11](#11-running-inside-boomi)).
+For a given name used for the n-th time, the names `name?params#n` → `name?params` → `name#n` → `name` are tried in
+this order (`?` and `@` are equivalent), and for each name the sources: in memory → Boomi Dynamic Process Property
+([section 11](#11-running-inside-boomi)) → table folders → registered file → `/tables/` (see
+[Which source wins](#which-source-wins)). The step resource of point 1 is looked up in the same sources.
 
 Tips:
 
@@ -445,11 +534,11 @@ Tips:
   Boomi** ([section 11](#11-running-inside-boomi)). A registered driver keeps its class loader (and its jar file) in
   use: containers that unload the driver can call `MockJdbcDriver.deregister()` (it does nothing when the driver is not
   registered); `MockJdbcDriver.isRegistered()` tells which case applies. At startup the driver logs one line through
-  `java.util.logging`: `MockJDBC 2.0 registered in DriverManager: true` (or `false`).
+  `java.util.logging`: `MockJDBC 2.1 registered in DriverManager: true` (or `false`).
 * Not every JDBC method is implemented; unsupported ones throw `UnsupportedOperationException`.
 * `setMaxRows(n)` limits the rows returned by the next queries of the statement (0 = no limit).
 * No key is ever generated: `getGeneratedKeys()` returns an empty result set (never `null`).
-* `Connection.getMetaData()`: product and driver name are `MockJDBC`, version `2.0`, the identifier quote string is a
+* `Connection.getMetaData()`: product and driver name are `MockJDBC`, version `2.1`, the identifier quote string is a
   space (identifiers are never quoted). `getColumns(catalog, schema, table, columnPattern)` returns one row per column
   of the table's CSV header, with the table found exactly as for a query (in memory, Boomi property, file); a header-only
   CSV is enough. `DATA_TYPE`/`TYPE_NAME` come from the `|type` of the header (`VARCHAR` when none), `DECIMAL_DIGITS` is
@@ -457,7 +546,8 @@ Tips:
   (`getTables`, `getPrimaryKeys`, ...) returns an empty one with the standard JDBC columns. No method returns `null`,
   so tools that inspect the metadata before running a query (e.g. the Boomi Database V2 connector) work.
 * **Character encoding:** in-memory CSV strings are used as they are, so any Unicode text works regardless of the VM settings.
-  CSV **files** (and `InputStream`s) are read with the default charset of the VM; make sure your files match it.
+  Files in table folders are read as UTF-8, registered files, `/tables/` and `InputStream`s with the default charset of
+  the VM; see [Encoding of the files](#encoding-of-the-files).
 
 ---
 
@@ -513,7 +603,8 @@ In Boomi the driver runs from a **Custom Library** component that holds three ja
 In the Database connection choose a custom driver with:
 
 * driver class `me.avogadro.mockjdbc.MockJdbcDriver`;
-* connection URL `any` (or `jdbc::mock::<dir>`, see [section 8](#8-several-databases-with-jdbc-urls)).
+* connection URL `any` (or `jdbc::mock::<dir>`, see [section 8](#8-several-databases-with-jdbc-urls); with an absolute
+  folder it is the root of the [table folders](#tables-from-folders)).
 
 #### Upgrading the jar
 
@@ -550,7 +641,7 @@ The driver looks for the Boomi class `com.boomi.execution.ExecutionUtil` on the 
 
 **No registration in `DriverManager` inside Boomi.** When the class `com.boomi.execution.ExecutionManager` is present
 the driver does not register itself in `DriverManager` (the container log shows
-`MockJDBC 2.0 registered in DriverManager: false`): Boomi instantiates the driver by class name and calls `connect()`
+`MockJDBC 2.1 registered in DriverManager: false`): Boomi instantiates the driver by class name and calls `connect()`
 directly, and a registered driver would keep the class loader of the Custom Library, and all its jars, in use. As a
 consequence, inside Boomi `DriverManager.getConnection(...)` (e.g. from a script) does not find mockjdbc: create the
 driver with `new me.avogadro.mockjdbc.MockJdbcDriver()` and call `connect("any", new Properties())`.
@@ -577,6 +668,7 @@ The first one that is set and not blank is used.
 | `-- TESTCASE: T_014a` | `mockjdbc_T_014a`, then `mockjdbc_t_014a` |
 | table with parameters `mytable?Smith,34` ([section 4](#4-different-results-for-different-parameters)) | `mockjdbc_mytable?Smith,34`, then `mockjdbc_mytable?smith,34` |
 | step 0 ([section 5](#5-step-based-results-a-scripted-sequence)) | `mockjdbc_##STEP0`, then `mockjdbc_##step0` |
+| table with parameters and `@` (same resource as `?`) | `mockjdbc_mytable?Smith,34`, `mockjdbc_mytable?smith,34`, then `mockjdbc_mytable@Smith,34`, `mockjdbc_mytable@smith,34` |
 
 When **writing** captured parameters the driver sets two properties with the same value: the table (or test case) as
 written in the SQL followed by `_PARAMS` in upper case, exactly like the in-memory resource of
@@ -611,6 +703,35 @@ A later `SELECT * FROM users` run through a Database connector that uses mockjdb
 * An empty (or blank) property counts as not defined.
 * Remember the case rule above: `mockjdbc_users` is found by `FROM users`, `FROM USERS` and `FROM Users`.
 * The value follows the [CSV format](#9-csv-format-reference) (header first; `\n` between rows).
+
+### Tables from folders
+
+On a runtime dedicated to tests (a local Atom, or a Molecule with shared storage) the tables can stay on the
+filesystem instead of in the process, grouped by folder ([section 7](#c-table-folders-any-folder-on-disk)):
+
+1. **Root**, once per runtime: set the connection URL of the test environment to the absolute root folder with an
+   environment extension, e.g. `jdbc::mock::/srv/mockdb` or `jdbc::mock::D:\MockDB`. Alternatively the JVM option
+   `-Dmockjdbc.root=...` or the environment variable `MOCKJDBC_ROOT` of the runtime.
+2. **Folders**, per test: set the Dynamic Process Property **`mockjdbc#FOLDER`** (or `mockjdbc#folder`) to the folders
+   of the test, relative to the root (or absolute), separated by `;`, before calling the process under test:
+
+```groovy
+ExecutionUtil.setDynamicProcessProperty("mockjdbc#FOLDER", "ProjectA/T_001_new_customer;_common", false)
+```
+
+* The test process holds only the name of its folder, not the path: the same test runs on a Windows and on a Linux
+  runtime.
+* Dynamic Process Properties belong to the execution, so tests running at the same time on the same runtime can use
+  different folders. The property is read by every query: to run several scenarios in one execution change it between
+  them (together with `mockjdbc#RESET`).
+* A Dynamic Process Property with a table (`mockjdbc_users`) wins over the file of the same name, so a test can override
+  one table of a folder.
+* Files are read as UTF-8; set **`mockjdbc#CHARSET`** (e.g. `windows-1252`) for other encodings.
+* A missing folder makes the query fail, so a misconfigured test fails instead of reading empty tables.
+* Captured parameters are still written only to the Dynamic Process Properties (`mockjdbc_users_params`).
+* The runtime must be able to read the folders (check the user of the Atom service, especially with network shares on
+  Windows). The Boomi public Atom Cloud has no filesystem you can fill: use Dynamic Process Properties or `/tables/`
+  there.
 
 ### Reading captured parameters in the process
 
@@ -682,9 +803,12 @@ has its own counters.
 | `addInMemoryTableResource(int step, InputStream csv)` | Same, from a stream |
 | `getInMemoryTableResource(String name)` | Read a resource, e.g. `<table>_PARAMS` after an INSERT/UPDATE/DELETE or `<proc>_PARAMS` after a procedure call |
 | `getInMemoryTableResourceForCurrentStep()` | Read the resource of the current step |
-| `addTableResource(String table, File csv)` | Register a CSV file for a table |
+| `addTableResource(String table, File csv)` | Register a CSV file for a table (any resource name) |
+| `setTableRoot(File root)` / `getTableRoot()` | Root of the table folders ([section 7](#c-table-folders-any-folder-on-disk)) |
+| `setTableFolders(String... folders)` / `getTableFolders()` | Folders the tables are read from, in order, relative to the root or absolute |
+| `setTableCharset(Charset charset)` / `getTableCharset()` | Charset of all the CSV files (default: UTF-8 for folders, VM default otherwise) |
 | `clearInMemoryTableResources()` | Remove all in-memory datasets |
-| `reset()` | Clear all resources and restart the step and occurrence counters |
+| `reset()` | Clear all resources, the table root, folders and charset, and restart the step and occurrence counters |
 | `resetCounters()` | Restart the step and occurrence counters of the current thread, keeping the resources |
 | `deregister()` | Remove the driver from `DriverManager` (for containers that unload it); no effect when not registered |
 | `isRegistered()` | Whether the driver is registered in `DriverManager` (never inside Boomi) |

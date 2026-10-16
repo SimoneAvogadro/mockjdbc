@@ -1,6 +1,31 @@
 Change Log
 ==========
 
+Version 2.1.0 (unreleased)
+----------------------------
+
+ * **Table folders**: tables can be read from any folder of the filesystem. The root of the folders comes from the
+   connection URL (`jdbc::mock::/srv/mockdb`, `jdbc::mock::C:\Data\MockDB`), `MockJdbcDriver.setTableRoot(File)`, the
+   system property `mockjdbc.root` or the environment variable `MOCKJDBC_ROOT`; the folders of a test, relative to the
+   root or absolute, from `MockJdbcDriver.setTableFolders(...)` or, inside Boomi, from the Dynamic Process Property
+   `mockjdbc#FOLDER` (e.g. `ProjectA/T_001;_common`). The folders are read on every query; a missing folder is an error
+ * Files support every resource name as in memory: `users#2.csv`, `users@Smith,34.csv`, `##STEP3.csv`, test cases and
+   procedures, compared case-insensitively on every operating system; characters not allowed on Windows are written as
+   `%XX` (`events@10%3A30.csv`)
+ * `@` is an alternative separator of the parameters, equivalent to `?` in memory, in files and in Dynamic Process
+   Properties (`users@Smith` = `users?Smith`)
+ * Single resolution order for all sources: for each name, from the most specific (`name?params#n`) to the most generic
+   (`name`), in memory → Dynamic Process Property → table folders → registered files → `/tables/`. **Changed:** an
+   in-memory resource or Dynamic Process Property now wins over a file registered with `addTableResource` for the same
+   name (before, the file won and hid also `name#n` and `name?params`), as section 10 of FEATURES.md already stated
+ * Registered files and `/tables/` support the same variants (`addTableResource("users#2", file)`,
+   `/tables/users#2.csv`); step resources can come from any source
+ * `jdbc::mock::<dir>` folders are read on every query: files added later are found and open connections keep working
+   after `reset()`; file names are case-insensitive (`Users.csv` was never found before)
+ * Files in table folders are read as UTF-8; `MockJdbcDriver.setTableCharset(Charset)` (Boomi: `mockjdbc#CHARSET`) sets
+   the charset of all files; a UTF-8 byte order mark is ignored everywhere
+ * `reset()` also clears the table root, folders and charset set from Java
+
 Version 2.0.1 (2026-10-09)
 ----------------------------
 

@@ -13,6 +13,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.sql.Connection;
 import java.sql.Driver;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.util.Properties;
 import java.util.jar.JarEntry;
@@ -44,6 +45,12 @@ public final class ClasspathTablesTest {
 		JarOutputStream out = new JarOutputStream(new FileOutputStream(jar));
 		out.putNextEntry(new JarEntry("tables/jartable.csv"));
 		out.write("name\nfrom jar\n".getBytes(Charset.defaultCharset()));
+		out.closeEntry();
+		out.putNextEntry(new JarEntry("tables/jartable#2.csv"));
+		out.write("name\nsecond from jar\n".getBytes(Charset.defaultCharset()));
+		out.closeEntry();
+		out.putNextEntry(new JarEntry("tables/jartable@x.csv"));
+		out.write("name\nx from jar\n".getBytes(Charset.defaultCharset()));
 		out.closeEntry();
 		out.close();
 	}
@@ -83,6 +90,29 @@ public final class ClasspathTablesTest {
 			stream.close();
 		}
 		return count;
+	}
+
+	@Test
+	public void testOccurrencesAndParametersInAJar() throws Exception {
+		URLClassLoader loader = IsolatedDriver.newClassLoader(jar.toURI().toURL());
+		try {
+			Class<?> driverClass = Class.forName("me.avogadro.mockjdbc.MockJdbcDriver", true, loader);
+			Driver driver = (Driver) driverClass.getDeclaredConstructor().newInstance();
+			Connection connection = driver.connect("any", new Properties());
+
+			Assert.assertEquals("from jar", firstName(connection, "jartable"));
+			Assert.assertEquals("second from jar", firstName(connection, "jartable"));
+
+			PreparedStatement statement = connection.prepareStatement("SELECT * FROM jartable WHERE a = ?");
+			statement.setString(1, "x");
+			ResultSet resultSet = statement.executeQuery();
+			Assert.assertTrue(resultSet.next());
+			Assert.assertEquals("x from jar", resultSet.getString("name"));
+
+			driverClass.getMethod("deregister").invoke(null);
+		} finally {
+			loader.close();
+		}
 	}
 
 	@Test

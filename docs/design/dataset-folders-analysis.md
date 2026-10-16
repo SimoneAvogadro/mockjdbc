@@ -1,7 +1,8 @@
 # Dataset su filesystem: analisi di fattibilità e di impatto
 
-> Stato: **analisi con decisioni prese** (sezione 9), nessuna modifica al codice. Riferimento: versione 2.0.1
-> (`master` @ `7eee4b7`). Versione obiettivo: **2.2.0**.
+> Stato: **implementato** sul branch `claude/youthful-pascal-oppcum` secondo le decisioni della sezione 9; il
+> riferimento per l'analisi è la versione 2.0.1 (`master` @ `7eee4b7`). Versione: **2.1.0**. Documentazione utente:
+> FEATURES.md, sezioni 7, 8, 10 e 11.
 
 ## 1. Obiettivo
 
@@ -253,8 +254,8 @@ Stima: circa 400–600 righe di codice più i test; nessuna nuova dipendenza.
    viene ora letta come "risorsa `a` con parametri `b`". La normalizzazione è simmetrica, quindi `a@b` registrato e
    `a@b` cercato continuano a trovarsi; cambia solo che diventa equivalente anche ad `a?b`.
 
-Versione (decisione 5): **2.2.0**, nuove funzioni senza rotture di compatibilità. `VERSION_MINOR` passa a 2 e la
-metadata del driver riporta `2.2`. Nota: non esiste una 2.1.0 (ultimo tag `mockjdbc-2.0.1`).
+Versione (decisione 5): **2.1.0**, nuove funzioni senza rotture di compatibilità. `VERSION_MINOR` passa a 1 e la
+metadata del driver riporta `2.1`.
 
 ### Documentazione
 
@@ -303,4 +304,4 @@ Da verificare manualmente su un Atom Windows: percorsi UNC, utente del servizio,
 | 2 | Radice | **tutte e tre** le fonti: URL > `setTableRoot` > `-Dmockjdbc.root` > `MOCKJDBC_ROOT` (sezione 4.1) |
 | 3 | Leggibilità dei nomi | `@` come separatore alternativo a `?`, equivalente in memoria, file e DPP; `%XX` solo per i caratteri residui nei nomi file (sezione 4.2) |
 | 4 | Cartella mancante o non leggibile | **errore** |
-| 5 | Versione | **2.2.0** |
+| 5 | Versione | **2.1.0** |

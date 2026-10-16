@@ -1,14 +1,9 @@
 package me.avogadro.mockjdbc.statement.impl;
 
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
-import java.io.InputStreamReader;
 import java.io.Reader;
 import java.io.StringReader;
-import java.net.URISyntaxException;
-import java.net.URL;
-import java.net.URLConnection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.text.MessageFormat;
@@ -27,6 +22,8 @@ import me.avogadro.mockjdbc.MockJdbcDriver;
 import me.avogadro.mockjdbc.resultset.MockResultSet;
 import me.avogadro.mockjdbc.resultset.MockResultSetMetaData;
 import me.avogadro.mockjdbc.resultset.impl.CSVResultSet;
+import me.avogadro.mockjdbc.resources.ResourceNames;
+import me.avogadro.mockjdbc.resources.TableLookup;
 import me.avogadro.mockjdbc.statement.StatementAdapter;
 
 import au.com.bytecode.opencsv.CSVReader;
@@ -60,6 +57,9 @@ public final class CsvStatement extends StatementAdapter {
 
     private final Map<String, File> tableResources;
 
+    /** folder of the connection URL, root of the table folders, may be null */
+    private final File connectionRoot;
+
     /**
      * used to describe the "current" params.
      * Always null when invoked from {@link CsvStatement} and may hold values when used from {@link CsvPreparedStatement}
@@ -92,7 +92,28 @@ public final class CsvStatement extends StatementAdapter {
 	 *            {@link Map} of table name to CSV file.
 	 */
 	public CsvStatement(Map<String, File> tableResources) {
+		this(tableResources, null);
+	}
+
+	/**
+	 * Constructs a new {@link CsvStatement}.
+	 *
+	 * @param tableResources
+	 *            {@link Map} of table name to CSV file.
+	 * @param connectionRoot folder of the connection URL, root of the table folders, may be <code>null</code>
+	 */
+	public CsvStatement(Map<String, File> tableResources, File connectionRoot) {
 		this.tableResources = tableResources;
+		this.connectionRoot = connectionRoot;
+	}
+
+	/**
+	 * @return the trimmed resource of the current step (<code>##STEPn</code>) from any source, or <code>null</code>
+	 * @throws SQLException if a table folder cannot be read
+	 */
+	String findStepResource() throws SQLException {
+		String stepRes = new TableLookup(tableResources, connectionRoot).find(MockJdbcDriver.getStepName());
+		return stepRes == null ? null : stepRes.trim();
 	}
 	
 	@Override
@@ -154,12 +175,12 @@ public final class CsvStatement extends StatementAdapter {
 	private ResultSet query(String sql) throws SQLException {
 
 		try {
-			String stepRes = MockJdbcDriver.getInMemoryTableResourceForCurrentStep();
+			String stepRes = findStepResource();
 			
 			// match based on the current step (sequence number)
 			if (stepRes!=null) {
 				// steps are already a sequence: no occurrence number
-				return createResultSet(tableResources, MockJdbcDriver.getStepName(), paramsString, 0);
+				return createResultSet(tableResources, connectionRoot, MockJdbcDriver.getStepName(), paramsString, 0);
 			}
 						
 			// Try to check for a special heading comment within SQL
@@ -233,101 +254,69 @@ public final class CsvStatement extends StatementAdapter {
 	}
 
 	/** a query on a named resource (table, test case, procedure): counts one more occurrence of that name */
-	private ResultSet createResultSet(String tableName) {
+	private ResultSet createResultSet(String tableName) throws SQLException {
 		lastOccurrenceName = tableName;
 		lastOccurrence = MockJdbcDriver.nextOccurrence(tableName);
-		return createResultSet(tableResources, tableName, paramsString, lastOccurrence);
+		return createResultSet(tableResources, connectionRoot, tableName, paramsString, lastOccurrence);
 	}
 
 	/**
 	 * Loads a table exactly as a <code>SELECT * FROM tableName</code> would, without running a statement (the step
-	 * counter is not touched): in-memory resource (or Boomi Dynamic Process Property), registered file, or
-	 * <code>/tables/&lt;name&gt;.csv</code>.
+	 * counter is not touched): in-memory resource (or Boomi Dynamic Process Property), table folder, registered file,
+	 * or <code>/tables/&lt;name&gt;.csv</code>.
 	 *
 	 * @param tableResources {@link Map} of table name to CSV file of the connection
 	 * @param tableName the table name
 	 * @return a {@link CSVResultSet}, or an empty {@link MockResultSet} if the table is not defined
+	 * @throws SQLException if a table folder cannot be read
 	 */
-	public static ResultSet loadTable(Map<String, File> tableResources, String tableName) {
-		return createResultSet(tableResources, tableName, null, 0);
+	public static ResultSet loadTable(Map<String, File> tableResources, String tableName) throws SQLException {
+		return loadTable(tableResources, null, tableName);
 	}
 
 	/**
+	 * Same as {@link #loadTable(Map, String)} for a connection whose URL gives the root of the table folders.
+	 *
+	 * @param tableResources {@link Map} of table name to CSV file of the connection
+	 * @param connectionRoot folder of the connection URL, root of the table folders, may be <code>null</code>
+	 * @param tableName the table name
+	 * @return a {@link CSVResultSet}, or an empty {@link MockResultSet} if the table is not defined
+	 * @throws SQLException if a table folder cannot be read
+	 */
+	public static ResultSet loadTable(Map<String, File> tableResources, File connectionRoot, String tableName)
+			throws SQLException {
+		return createResultSet(tableResources, connectionRoot, tableName, null, 0);
+	}
+
+	/**
+	 * Looks up, in every source (see {@link TableLookup}), the most specific name first:
+	 * <code>name?params#n</code>, <code>name?params</code>, <code>name#n</code>, <code>name</code>.
+	 *
 	 * @param occurrence how many times the resource name has been used (1 = first), 0 = not counted
 	 */
-	private static ResultSet createResultSet(Map<String, File> tableResources, String tableName, String paramsString,
-			int occurrence) {
-		Reader inMemoryReader = null;
-		String inMemoryCSV = null;
+	private static ResultSet createResultSet(Map<String, File> tableResources, File connectionRoot, String tableName,
+			String paramsString, int occurrence) throws SQLException {
 		String occurrenceSuffix = occurrence > 0 ? MockJdbcDriver.OCCURRENCE_SEPARATOR + occurrence : null;
 
-		// search for "tablename?param1,param2#n" and "tablename?param1,param2"
-		if (paramsString!=null) {
+		List<String> names = new ArrayList<String>(4);
+		if (paramsString != null) {
+			String withParams = tableName + ResourceNames.PARAMS_SEPARATOR + paramsString;
 			if (occurrenceSuffix != null) {
-				inMemoryCSV = MockJdbcDriver.getInMemoryTableResource(tableName+"?"+paramsString+occurrenceSuffix);
+				names.add(withParams + occurrenceSuffix);
 			}
-			if (inMemoryCSV==null) {
-				inMemoryCSV = MockJdbcDriver.getInMemoryTableResource(tableName+"?"+paramsString);
-			}
-		} // then "tablename#n" and just "tablename"
-		if (inMemoryCSV==null && occurrenceSuffix != null) {
-			inMemoryCSV = MockJdbcDriver.getInMemoryTableResource(tableName+occurrenceSuffix);
+			names.add(withParams);
 		}
-		if (inMemoryCSV==null) {
-			inMemoryCSV = MockJdbcDriver.getInMemoryTableResource(tableName);
-		} // if any in memory CSV is found read it directly: a String needs no charset
-		if (inMemoryCSV!=null) {
-			inMemoryReader = new StringReader(inMemoryCSV);
+		if (occurrenceSuffix != null) {
+			names.add(tableName + occurrenceSuffix);
 		}
-		
-		// Does a text file for the mock table exist?
-		File resource = tableResources.get(tableName.toLowerCase());
-		// a /tables/<name>.csv found on the classpath but not in a directory (e.g. inside a jar)
-		URL classpathResource = null;
-		if (resource == null && inMemoryReader == null) {
-			// Try to load /tables/<name>.csv from the classpath: a directory or a jar
-			URL url = CsvStatement.class.getResource("/tables/" + tableName.toLowerCase() + ".csv");
-			if (url == null) {
-				LOGGER.info("No table definition found for '{}', using MockResultSet.", tableName);
-				return new MockResultSet();
-			} else if ("file".equalsIgnoreCase(url.getProtocol())) {
-				try {
-					resource = new File(url.toURI());
-				} catch (URISyntaxException e) {
-					LOGGER.error("Error creating URI for table file: {}", e.getMessage(), e);
-				}
-			} else {
-				classpathResource = url;
-			}
-		}
+		names.add(tableName);
 
-		Reader tableReader = null;
-		try {
-			// files and classpath resources are read with the default charset of the VM
-			if (resource != null) {
-				tableReader = new InputStreamReader(new FileInputStream(resource));
-			} else if (classpathResource != null) {
-				URLConnection connection = classpathResource.openConnection();
-				// no cache: a cached jar stays open (and locked on Windows) until the JVM stops
-				connection.setUseCaches(false);
-				tableReader = new InputStreamReader(connection.getInputStream());
-			} else {
-				tableReader = inMemoryReader;	// might be null => no inMemoryCSV
-			}
-			return createGenericResultSet(tableName, tableReader);
-		} catch (IOException e) {
-			LOGGER.info("No table definition found for '{}', using MockResultSet.", tableName, e);
-		} finally {
-			if (tableReader != null) {
-				try {
-					tableReader.close();
-				} catch (IOException e) {
-					// ignore
-				}
-			}
+		String csv = new TableLookup(tableResources, connectionRoot).find(names);
+		if (csv == null) {
+			LOGGER.info("No table definition found for '{}' (tried {}), using MockResultSet.", tableName, names);
+			return new MockResultSet();
 		}
-
-		return new MockResultSet();
+		return createGenericResultSet(tableName, new StringReader(csv));
 	}
 
 	private static ResultSet createGenericResultSet(String tableName, Reader tableDataReader) {

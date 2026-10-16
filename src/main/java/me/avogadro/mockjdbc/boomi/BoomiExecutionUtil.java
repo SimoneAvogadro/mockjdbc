@@ -7,6 +7,8 @@ import java.lang.reflect.Modifier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import me.avogadro.mockjdbc.resources.ResourceNames;
+
 /**
  * Access to the Boomi runtime ({@value #EXECUTION_UTIL_CLASS}) through reflection.
  * <p>
@@ -27,6 +29,15 @@ public final class BoomiExecutionUtil {
 
 	/** Dynamic Process Property requesting a reset of the counters (also read in lower case) */
 	public static final String RESET_PROPERTY = "mockjdbc#RESET";
+
+	/**
+	 * Dynamic Process Property with the table folders of the test, separated by <code>;</code> (also read in lower
+	 * case): relative to the root of the table folders, or absolute
+	 */
+	public static final String FOLDER_PROPERTY = "mockjdbc#FOLDER";
+
+	/** Dynamic Process Property with the charset of the CSV files (also read in lower case) */
+	public static final String CHARSET_PROPERTY = "mockjdbc#CHARSET";
 
 	/** Runtime execution property identifying the current execution (fallback for the top level execution ID) */
 	public static final String EXECUTION_ID_PROPERTY = "EXECUTION_ID";
@@ -75,7 +86,9 @@ public final class BoomiExecutionUtil {
 	/**
 	 * Reads the Dynamic Process Property of a driver resource. Boomi property names are case sensitive while the
 	 * driver resources are not, so the name is tried as written first (e.g. <code>mockjdbc_T_014a</code>) and then in
-	 * lower case (<code>mockjdbc_t_014a</code>). Empty or blank values count as not defined.
+	 * lower case (<code>mockjdbc_t_014a</code>). A name with parameters is also tried with the other separator
+	 * (<code>mockjdbc_users?Smith</code>, <code>mockjdbc_users?smith</code>, <code>mockjdbc_users@Smith</code>,
+	 * <code>mockjdbc_users@smith</code>). Empty or blank values count as not defined.
 	 *
 	 * @param resourceName name of a table, test case, step or captured parameters
 	 * @return the trimmed property value, or <code>null</code> if not defined or not running inside Boomi
@@ -84,13 +97,37 @@ public final class BoomiExecutionUtil {
 		if (!isBoomi()) {
 			return null;
 		}
-		String exactName = propertyName(resourceName);
-		String value = trimToNull(getDynamicProcessProperty(exactName));
-		if (value == null) {
-			String lowerCaseName = propertyName(resourceName.toLowerCase());
-			if (!lowerCaseName.equals(exactName)) {
-				value = trimToNull(getDynamicProcessProperty(lowerCaseName));
+		// users?Smith is also users@Smith: each spelling as written, then in lower case
+		for (String spelling : ResourceNames.spellings(resourceName)) {
+			String exactName = propertyName(spelling);
+			String value = trimToNull(getDynamicProcessProperty(exactName));
+			if (value == null) {
+				String lowerCaseName = propertyName(spelling.toLowerCase());
+				if (!lowerCaseName.equals(exactName)) {
+					value = trimToNull(getDynamicProcessProperty(lowerCaseName));
+				}
 			}
+			if (value != null) {
+				return value;
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * Reads a Dynamic Process Property that configures the driver (e.g. {@value #FOLDER_PROPERTY}), as written and
+	 * then in lower case.
+	 *
+	 * @param name the property name
+	 * @return the trimmed value, or <code>null</code> if not set, blank or not running inside Boomi
+	 */
+	public static String getControlProperty(String name) {
+		if (!isBoomi()) {
+			return null;
+		}
+		String value = trimToNull(getDynamicProcessProperty(name));
+		if (value == null && !name.equals(name.toLowerCase())) {
+			value = trimToNull(getDynamicProcessProperty(name.toLowerCase()));
 		}
 		return value;
 	}
