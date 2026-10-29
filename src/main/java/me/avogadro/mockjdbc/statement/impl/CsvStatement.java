@@ -71,6 +71,12 @@ public final class CsvStatement extends StatementAdapter {
     String lastOccurrenceName = null;
     int lastOccurrence = 0;
 
+    /**
+     * the exception thrown by the last {@link #executeQuery(String)} because it found an error resource (see
+     * {@link InjectedError}), <code>null</code> if it did not throw one
+     */
+    SQLException injectedError = null;
+
     /** see {@link #setMaxRows(int)}: 0 = no limit */
     private int maxRows = 0;
 
@@ -98,14 +104,40 @@ public final class CsvStatement extends StatementAdapter {
 	
 	@Override
 	public ResultSet executeQuery(String sql) throws SQLException {
+		injectedError = null;
 		MockJdbcDriver.beforeExecution();
 		lastOccurrenceName = null;
 		lastOccurrence = 0;
 		ResultSet resultSet = query(sql);
+		if (InjectedError.isErrorResource(resultSet)) {
+			throw inject(resultSet);
+		}
 		if (maxRows > 0 && resultSet instanceof CSVResultSet) {
 			((CSVResultSet) resultSet).setMaxRows(maxRows);
 		}
 		return resultSet;
+	}
+
+	/**
+	 * Records the error declared by the resource of the last query (as <code>&lt;name&gt;_ERROR</code>, plus
+	 * <code>#n</code> for a counted name) and keeps it in {@link #injectedError}.
+	 *
+	 * @return the exception to throw
+	 */
+	private SQLException inject(ResultSet errorResource) throws SQLException {
+		// a step is a sequence: it has no occurrence number
+		boolean isStep = lastOccurrenceName == null;
+		String name = isStep ? MockJdbcDriver.getStepName() : lastOccurrenceName;
+		int occurrence = isStep ? 0 : lastOccurrence;
+		SQLException error = InjectedError.of(errorResource, countedName(name, occurrence));
+		InjectedError.record(name, occurrence, error);
+		injectedError = error;
+		return error;
+	}
+
+	/** <code>orders#2</code> for the second use of a name, the plain name when it is not counted */
+	private static String countedName(String name, int occurrence) {
+		return occurrence > 0 ? name + MockJdbcDriver.OCCURRENCE_SEPARATOR + occurrence : name;
 	}
 
 	@Override
@@ -265,10 +297,31 @@ public final class CsvStatement extends StatementAdapter {
 	 *
 	 * @param tableResources {@link Map} of table name to CSV file of the connection
 	 * @param tableName the table name
-	 * @return a {@link CSVResultSet}, or an empty {@link MockResultSet} if the table is not defined
+	 * @return a {@link CSVResultSet}, or an empty {@link MockResultSet} if the table is not defined or is an error
+	 *         resource (see {@link InjectedError}): the metadata ignores errors, as if the resource were absent
+	 * @throws SQLException if the header of the table cannot be read
 	 */
-	public static ResultSet loadTable(Map<String, File> tableResources, String tableName) {
-		return createResultSet(tableResources, tableName, null, 0);
+	public static ResultSet loadTable(Map<String, File> tableResources, String tableName) throws SQLException {
+		ResultSet resultSet = createResultSet(tableResources, tableName, null, 0);
+		return InjectedError.isErrorResource(resultSet) ? new MockResultSet() : resultSet;
+	}
+
+	/**
+	 * Looks for an error resource with the lookup order of a query (<code>name?params#n</code>,
+	 * <code>name?params</code>, <code>name#n</code>, <code>name</code>), without running a statement.
+	 *
+	 * @param tableResources {@link Map} of table name to CSV file of the connection
+	 * @param name the resource name, without parameters or occurrence
+	 * @param paramsString the parameters of the statement, or <code>null</code>
+	 * @param occurrence how many times the name has been used (1 = first), 0 = not counted
+	 * @return the exception declared by the resource (see {@link InjectedError#of}), or <code>null</code> if there is
+	 *         no resource with that name or it is not an error resource
+	 * @throws SQLException if the resource cannot be read
+	 */
+	static SQLException findInjectedError(Map<String, File> tableResources, String name, String paramsString,
+			int occurrence) throws SQLException {
+		ResultSet resultSet = findResultSet(tableResources, name, paramsString, occurrence);
+		return resultSet == null ? null : InjectedError.of(resultSet, countedName(name, occurrence));
 	}
 
 	/**

@@ -4,6 +4,7 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.SQLException;
 
 import org.junit.After;
 import org.junit.Assert;
@@ -198,6 +199,26 @@ public final class BoomiExecutionUtilTest {
 		Assert.assertEquals(4, FakeExecutionUtil.PROPERTIES.size());
 		// still available through the driver API as before
 		Assert.assertEquals("hello,30", MockJdbcDriver.getInMemoryTableResource("users_PARAMS"));
+	}
+
+	@Test
+	public void testInjectedErrorMessageIsExposedAsDynamicProcessProperties() throws Exception {
+		BoomiExecutionUtil.lookup(FakeExecutionUtil.class.getName());
+
+		FakeExecutionUtil.PROPERTIES.put("mockjdbc_Orders", "SQLException,SQLState\nboom,40001");
+		try {
+			DriverManager.getConnection("any").createStatement().executeQuery("SELECT * FROM Orders");
+			Assert.fail("the error resource must throw");
+		} catch (SQLException expected) {
+			Assert.assertEquals("boom", expected.getMessage());
+		}
+
+		Assert.assertEquals("boom", FakeExecutionUtil.PROPERTIES.get("mockjdbc_Orders_ERROR"));
+		Assert.assertEquals("boom", FakeExecutionUtil.PROPERTIES.get("mockjdbc_orders_error"));
+		Assert.assertEquals("boom", FakeExecutionUtil.PROPERTIES.get("mockjdbc_Orders_ERROR#1"));
+		Assert.assertEquals("boom", FakeExecutionUtil.PROPERTIES.get("mockjdbc_orders_error#1"));
+		Assert.assertEquals(Boolean.FALSE, FakeExecutionUtil.PERSIST_FLAGS.get("mockjdbc_orders_error#1"));
+		Assert.assertEquals("boom", MockJdbcDriver.getInMemoryTableResource("Orders_ERROR"));
 	}
 
 	@Test

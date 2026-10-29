@@ -173,6 +173,22 @@ public final class MockDatabaseMetaDataTest {
 	}
 
 	@Test
+	public void testGetColumnsIgnoresErrorResource() throws SQLException {
+		MockJdbcDriver.addInMemoryTableResource("orders", "SQLException,SQLState,ErrorCode\nboom,23000,1062");
+
+		Assert.assertFalse(metaData.getColumns(null, null, "orders", null).next());
+	}
+
+	@Test
+	public void testGetColumnsReadsHeaderWhenErrorIsOnOccurrence() throws SQLException {
+		MockJdbcDriver.addInMemoryTableResource("orders", "id|integer, name");
+		MockJdbcDriver.addInMemoryTableResource("orders#2", "SQLException\nboom");
+
+		Assert.assertEquals("id:" + Types.INTEGER + ":INTEGER:0 name:" + Types.VARCHAR + ":VARCHAR:0",
+				describe(metaData.getColumns(null, null, "orders", null)));
+	}
+
+	@Test
 	public void testGetColumnsDoesNotAdvanceTheStepCounter() throws SQLException {
 		MockJdbcDriver.addInMemoryTableResource("customers", "id|integer");
 		MockJdbcDriver.addInMemoryTableResource(0, "step\nfirst");

@@ -4,6 +4,7 @@ import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.SQLIntegrityConstraintViolationException;
 import java.sql.Types;
 import java.util.Calendar;
 import java.util.Locale;
@@ -117,6 +118,25 @@ public final class LocaleIndependenceTest {
 			Assert.assertEquals(7, resultSet.getInt("ID"));
 			Assert.assertEquals("Milano", resultSet.getString("CITY"));
 		});
+	}
+
+	@Test
+	public void testErrorClassNameWithI() throws Throwable {
+		for (Locale locale : new Locale[] { ITALIAN, TURKISH }) {
+			for (String header : new String[] { "SQLINTEGRITYCONSTRAINTVIOLATIONEXCEPTION",
+					"sqlintegrityconstraintviolationexception", "SQLIntegrityConstraintViolationException" }) {
+				inLocale(locale, () -> {
+					MockJdbcDriver.addInMemoryTableResource("t", header + "\nDuplicate entry");
+					try {
+						DriverManager.getConnection("any").createStatement().executeQuery("SELECT * FROM t");
+						Assert.fail("the error resource must throw: " + header);
+					} catch (SQLException e) {
+						Assert.assertSame(header, SQLIntegrityConstraintViolationException.class, e.getClass());
+						Assert.assertEquals("Duplicate entry", e.getMessage());
+					}
+				});
+			}
+		}
 	}
 
 	@Test
