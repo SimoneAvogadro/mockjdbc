@@ -559,7 +559,18 @@ Tips:
   use: containers that unload the driver can call `MockJdbcDriver.deregister()` (it does nothing when the driver is not
   registered); `MockJdbcDriver.isRegistered()` tells which case applies. At startup the driver logs one line through
   `java.util.logging`: `MockJDBC 2.3 registered in DriverManager: true` (or `false`).
-* Not every JDBC method is implemented; unsupported ones throw `UnsupportedOperationException`.
+* Not every JDBC method is implemented, and an unimplemented method does **not always fail**. A few throw
+  (`UnsupportedOperationException` from some `ResultSetMetaData` methods such as `isAutoIncrement` or
+  `getColumnDisplaySize`; `SQLFeatureNotSupportedException` from the LOB, stream, `URL` and `getRef`-style methods
+  **by parameter name** of `CallableStatement`), but many are **silent no-ops** inherited from
+  `PreparedStatementAdapter`, `StatementAdapter` and `ConnectionAdapter`: they do nothing and **capture nothing**, so
+  the parameter stays empty in `_PARAMS` and in the `?params` key. On a `PreparedStatement` (and on a
+  `CallableStatement` by index) these are `setCharacterStream`, `setNCharacterStream`, `setClob`, `setNClob`,
+  `setNString`, `setBytes`, `setBlob`, `setBinaryStream`, `setAsciiStream`, the `Calendar` variants of `setDate`,
+  `setTime` and `setTimestamp`, `setURL` and `setArray`. On a plain `Statement` (`createStatement`), `execute(sql)`
+  and `executeUpdate(sql)` return `false` / `0` and capture nothing, and so does `executeBatch()` (all zeros): only
+  `executeQuery` returns data. On the connection, `setAutoCommit`, `commit` and `rollback` do nothing, and `isValid()`
+  returns `false`. See [FUTURE.md](FUTURE.md), items 12 (setters), 14 (`isValid`) and 15 (transactions).
 * `setMaxRows(n)` limits the rows returned by the next queries of the statement (0 = no limit).
 * No key is ever generated: `getGeneratedKeys()` returns an empty result set (never `null`).
 * `Connection.getMetaData()`: product and driver name are `MockJDBC`, version `2.3`, the identifier quote string is a
@@ -577,6 +588,20 @@ Tips:
   so tools that inspect the metadata before running a query (e.g. the Boomi Database V2 connector) work.
 * **Character encoding:** in-memory CSV strings are used as they are, so any Unicode text works regardless of the VM settings.
   CSV **files** (and `InputStream`s) are read with the default charset of the VM; make sure your files match it.
+
+### What mockjdbc does not do
+
+mockjdbc does **not parse, validate or execute SQL**: there is no SQL parser, no evaluation of `WHERE`, `ORDER BY` or
+aggregates on the CSV rows, no embedded SQL engine (such as H2) and no static check of the SQL text. The SQL is only
+scanned for the name of its dataset ([section 3](#3-how-a-query-finds-its-dataset)), and a query returns the rows of
+its CSV as they are. This is a deliberate choice: the SQL is validated during development by runs in the DEV
+environment against the real database, while the goal of unit tests with mockjdbc is to make the execution
+**repeatable and deterministic**, not to validate the SQL. A syntax error, a wrong column or a wrong filter is therefore
+not detected by mockjdbc. See also [FUTURE.md, Not planned](FUTURE.md#not-planned).
+
+mockjdbc has **no transactions** either: `setAutoCommit`, `commit` and `rollback` do nothing, and every write is
+captured when it is executed, so a write that the connector later rolls back is still captured. Transaction logic is
+out of the goals of mockjdbc.
 
 ---
 
