@@ -4,6 +4,9 @@ Change Log
 Unreleased
 ----------------------------
 
+Version 2.3.0 (2026-10-29)
+----------------------------
+
  * New: error resources. A mock whose CSV header starts with the simple name of a `java.sql` exception
    (`SQLException`, `SQLIntegrityConstraintViolationException`, `SQLTimeoutException`, ... 13 classes) makes the
    statement that finds it throw exactly that class, with the message, `SQLState` and `ErrorCode` of the first data row
