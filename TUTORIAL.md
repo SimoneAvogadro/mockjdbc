@@ -224,8 +224,9 @@ If something does not work:
   order, prefixed `in_`, `out_` or `inout_` (optionally a `ret_` column for the return value); its first row holds
   the OUT values, the IN values are ignored. E.g. `in_name,in_value|integer,out_size|integer,out_status` with the row
   `,,42,OK` ([stored procedures](FEATURES.md#stored-procedures)).
-* **Failures, to test the Try/Catch of the process**: a table whose CSV header starts with the name of a Java exception
-  makes the statement throw it instead of returning rows. E.g. `mockjdbc_users#2` with the header
+* **Failures, to test the Try/Catch of the process**: a table whose CSV header starts with the name of one of the
+  `java.sql` exceptions (`SQLException`, `SQLTimeoutException`, ...) makes the statement throw it instead of returning
+  rows; a header such as `RuntimeException` is read as data. E.g. `mockjdbc_users#2` with the header
   `SQLException,SQLState,ErrorCode` and the row `Deadlock victim,40001,1205` fails the second statement on `users`;
   `mockjdbc_users_error` then holds the message that was thrown
   ([simulating errors](FEATURES.md#12-simulating-errors-sqlexception)).
