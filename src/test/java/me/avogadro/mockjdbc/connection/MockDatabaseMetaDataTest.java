@@ -257,6 +257,27 @@ public final class MockDatabaseMetaDataTest {
 	}
 
 	@Test
+	public void testGetProcedureColumnsIgnoresErrorResource() throws SQLException {
+		MockJdbcDriver.addInMemoryTableResource("spSave", "SQLException,SQLState,ErrorCode\nboom,23000,1062");
+
+		Assert.assertFalse(metaData.getProcedureColumns(null, null, "spSave", null).next());
+	}
+
+	@Test
+	public void testGetProcedureColumnsReadsSignatureWhenErrorIsOnOccurrence() throws SQLException {
+		MockJdbcDriver.addInMemoryTableResource("spSave", "in_name,out_status\n,ok");
+		MockJdbcDriver.addInMemoryTableResource("spSave#1", "SQLException,SQLState,ErrorCode\nboom,23000,1062");
+
+		ResultSet columns = metaData.getProcedureColumns(null, null, "spSave", null);
+
+		Assert.assertTrue(columns.next());
+		Assert.assertEquals("name", columns.getString("COLUMN_NAME"));
+		Assert.assertTrue(columns.next());
+		Assert.assertEquals("status", columns.getString("COLUMN_NAME"));
+		Assert.assertFalse(columns.next());
+	}
+
+	@Test
 	public void testGetProcedureColumnsIsEmptyWithoutASignature() throws SQLException {
 		MockJdbcDriver.addInMemoryTableResource("spList", "id,name\n1,a");
 

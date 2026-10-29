@@ -50,7 +50,6 @@ public class CsvCallableStatement extends CsvPreparedStatement implements Callab
 	private static final Pattern RETURN_PLACEHOLDER_PATTERN = Pattern.compile(
 			"(?:\\s*--[^\\n]*\\n)*\\s*\\{?\\s*\\?\\s*=.*", Pattern.DOTALL);
 
-	private final Map<String, File> tableResources;
 	/** name of the procedure in the SQL, or <code>null</code> */
 	private final String procedureName;
 	private final boolean returnPlaceholder;
@@ -71,7 +70,6 @@ public class CsvCallableStatement extends CsvPreparedStatement implements Callab
 	 */
 	public CsvCallableStatement(Map<String, File> tableResources, String sql) {
 		super(tableResources, sql);
-		this.tableResources = tableResources;
 		this.procedureName = CsvStatement.matchStoredProcedureCall(sql);
 		this.returnPlaceholder = RETURN_PLACEHOLDER_PATTERN.matcher(sql).matches();
 	}

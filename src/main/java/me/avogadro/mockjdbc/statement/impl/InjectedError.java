@@ -85,6 +85,15 @@ final class InjectedError {
 	}
 
 	/**
+	 * @param firstColumn the first column of a CSV header, as written (with its optional <code>|type</code>)
+	 * @return <code>true</code> if it names a supported exception class, ignoring case and spaces: a cheap test on the
+	 *         header alone, for the lookup of a write that does not parse the rows of a data resource
+	 */
+	static boolean isErrorHeader(String firstColumn) {
+		return FACTORIES.containsKey(columnName(firstColumn));
+	}
+
+	/**
 	 * @param resultSet the data of a resource
 	 * @param name the counted name with its occurrence (<code>orders#2</code>) or the step name, used in the default
 	 *        message and to report an invalid resource
@@ -164,7 +173,13 @@ final class InjectedError {
 		if (metaData == null || metaData.getColumnCount() == 0) {
 			return null;
 		}
-		return FACTORIES.get(metaData.getColumnName(1).trim().toLowerCase(Locale.ROOT));
+		return FACTORIES.get(columnName(metaData.getColumnName(1)));
+	}
+
+	/** the key of {@link #FACTORIES} for a column: trimmed, without its <code>|type</code>, in lower case */
+	private static String columnName(String column) {
+		int type = column.indexOf('|');
+		return (type < 0 ? column : column.substring(0, type)).trim().toLowerCase(Locale.ROOT);
 	}
 
 	private static SQLException invalid(String name, String problem) {

@@ -70,6 +70,8 @@ public final class CsvStatement extends StatementAdapter {
     /** resource name and occurrence number used by the last query (see {@link MockJdbcDriver#nextOccurrence}) */
     String lastOccurrenceName = null;
     int lastOccurrence = 0;
+    /** the last query was answered by the resource of the current step (a sequence, not counted by name) */
+    boolean lastWasStep = false;
 
     /**
      * the exception thrown by the last {@link #executeQuery(String)} because it found an error resource (see
@@ -108,6 +110,7 @@ public final class CsvStatement extends StatementAdapter {
 		MockJdbcDriver.beforeExecution();
 		lastOccurrenceName = null;
 		lastOccurrence = 0;
+		lastWasStep = false;
 		ResultSet resultSet = query(sql);
 		if (InjectedError.isErrorResource(resultSet)) {
 			throw inject(resultSet);
@@ -126,9 +129,8 @@ public final class CsvStatement extends StatementAdapter {
 	 */
 	private SQLException inject(ResultSet errorResource) throws SQLException {
 		// a step is a sequence: it has no occurrence number
-		boolean isStep = lastOccurrenceName == null;
-		String name = isStep ? MockJdbcDriver.getStepName() : lastOccurrenceName;
-		int occurrence = isStep ? 0 : lastOccurrence;
+		String name = lastWasStep ? MockJdbcDriver.getStepName() : lastOccurrenceName;
+		int occurrence = lastWasStep ? 0 : lastOccurrence;
 		SQLException error = InjectedError.of(errorResource, countedName(name, occurrence));
 		InjectedError.record(name, occurrence, error);
 		injectedError = error;
@@ -192,6 +194,7 @@ public final class CsvStatement extends StatementAdapter {
 			// match based on the current step (sequence number)
 			if (stepRes!=null) {
 				// steps are already a sequence: no occurrence number
+				lastWasStep = true;
 				return createResultSet(tableResources, MockJdbcDriver.getStepName(), paramsString, 0);
 			}
 						
@@ -278,7 +281,7 @@ public final class CsvStatement extends StatementAdapter {
 	private ResultSet createTableResultSet(String tableName) {
 		lastOccurrenceName = tableName;
 		lastOccurrence = MockJdbcDriver.nextOccurrence(tableName);
-		ResultSet resultSet = findTableResultSet(tableResources, tableName, paramsString, lastOccurrence);
+		ResultSet resultSet = findTableResultSet(tableResources, tableName, paramsString, lastOccurrence, false);
 		if (resultSet == null) {
 			LOGGER.info("No table definition found for '{}', using MockResultSet.", tableName);
 			return new MockResultSet();
@@ -287,15 +290,16 @@ public final class CsvStatement extends StatementAdapter {
 	}
 
 	/**
+	 * @param errorsOnly see {@link #findResultSet}
 	 * @return the data of a table: the resource of the full name (<code>dbo.customers</code>), then the one of its last
 	 *         part (<code>customers</code>) with the same occurrence number; <code>null</code> if there is none
 	 */
 	private static ResultSet findTableResultSet(Map<String, File> tableResources, String tableName,
-			String paramsString, int occurrence) {
-		ResultSet resultSet = findResultSet(tableResources, tableName, paramsString, occurrence);
+			String paramsString, int occurrence, boolean errorsOnly) {
+		ResultSet resultSet = findResultSet(tableResources, tableName, paramsString, occurrence, errorsOnly);
 		String shortName = SqlNames.lastPart(tableName);
 		if (resultSet == null && shortName != null) {
-			resultSet = findResultSet(tableResources, shortName, paramsString, occurrence);
+			resultSet = findResultSet(tableResources, shortName, paramsString, occurrence, errorsOnly);
 		}
 		return resultSet;
 	}
@@ -318,7 +322,9 @@ public final class CsvStatement extends StatementAdapter {
 
 	/**
 	 * Looks for an error resource with the lookup order of a query (<code>name?params#n</code>,
-	 * <code>name?params</code>, <code>name#n</code>, <code>name</code>), without running a statement.
+	 * <code>name?params</code>, <code>name#n</code>, <code>name</code>), without running a statement. Only the header
+	 * of the resource is read (and its first row, if it is an error resource): the rows of a data resource are never
+	 * parsed, so a write costs the same whatever the size of the mock, and a malformed row is not a problem there.
 	 *
 	 * @param tableResources {@link Map} of table name to CSV file of the connection
 	 * @param name the resource name, without parameters or occurrence
@@ -330,7 +336,7 @@ public final class CsvStatement extends StatementAdapter {
 	 */
 	static SQLException findInjectedError(Map<String, File> tableResources, String name, String paramsString,
 			int occurrence) throws SQLException {
-		ResultSet resultSet = findResultSet(tableResources, name, paramsString, occurrence);
+		ResultSet resultSet = findResultSet(tableResources, name, paramsString, occurrence, true);
 		return resultSet == null ? null : InjectedError.of(resultSet, countedName(name, occurrence));
 	}
 
@@ -343,7 +349,7 @@ public final class CsvStatement extends StatementAdapter {
 	 */
 	static SQLException findInjectedTableError(Map<String, File> tableResources, String tableName,
 			String paramsString, int occurrence) throws SQLException {
-		ResultSet resultSet = findTableResultSet(tableResources, tableName, paramsString, occurrence);
+		ResultSet resultSet = findTableResultSet(tableResources, tableName, paramsString, occurrence, true);
 		return resultSet == null ? null : InjectedError.of(resultSet, countedName(tableName, occurrence));
 	}
 
@@ -352,7 +358,7 @@ public final class CsvStatement extends StatementAdapter {
 	 */
 	private static ResultSet createResultSet(Map<String, File> tableResources, String tableName, String paramsString,
 			int occurrence) {
-		ResultSet resultSet = findResultSet(tableResources, tableName, paramsString, occurrence);
+		ResultSet resultSet = findResultSet(tableResources, tableName, paramsString, occurrence, false);
 		if (resultSet == null) {
 			LOGGER.info("No table definition found for '{}', using MockResultSet.", tableName);
 			return new MockResultSet();
@@ -361,11 +367,14 @@ public final class CsvStatement extends StatementAdapter {
 	}
 
 	/**
+	 * @param errorsOnly <code>true</code> for the lookup of a write, which only looks for an error resource: the header
+	 *        is read, then the first row if the header is that of an error resource; a resource that is not an error
+	 *        resource gives an empty {@link MockResultSet} without parsing its rows
 	 * @return the data of the resource, or <code>null</code> if no in-memory resource, file or classpath resource has
 	 *         that name
 	 */
 	private static ResultSet findResultSet(Map<String, File> tableResources, String tableName, String paramsString,
-			int occurrence) {
+			int occurrence, boolean errorsOnly) {
 		Reader inMemoryReader = null;
 		String inMemoryCSV = null;
 		String occurrenceSuffix = occurrence > 0 ? MockJdbcDriver.OCCURRENCE_SEPARATOR + occurrence : null;
@@ -422,7 +431,7 @@ public final class CsvStatement extends StatementAdapter {
 			} else {
 				tableReader = inMemoryReader;	// might be null => no inMemoryCSV
 			}
-			return createGenericResultSet(tableName, tableReader);
+			return createGenericResultSet(tableName, tableReader, errorsOnly);
 		} catch (IOException e) {
 			LOGGER.info("No table definition found for '{}', using MockResultSet.", tableName, e);
 		} finally {
@@ -438,7 +447,10 @@ public final class CsvStatement extends StatementAdapter {
 		return new MockResultSet();
 	}
 
-	private static ResultSet createGenericResultSet(String tableName, Reader tableDataReader) {
+	/**
+	 * @param errorsOnly see {@link #findResultSet}
+	 */
+	private static ResultSet createGenericResultSet(String tableName, Reader tableDataReader, boolean errorsOnly) {
 
 		// Maps table columns to a number of available values.
 		Collection<LinkedHashMap<String, String>> entries = new ArrayList<LinkedHashMap<String, String>>();
@@ -453,11 +465,13 @@ public final class CsvStatement extends StatementAdapter {
 			if (header == null) {
 				LOGGER.info("Empty table definition for '{}', using MockResultSet.", tableName);
 				return new MockResultSet();
+			} else if (errorsOnly && !(header.length > 0 && InjectedError.isErrorHeader(header[0]))) {
+				return new MockResultSet();
 			} else {
 
 				String[] data;
-				// Read data
-				while ((data = tableReader.readNext()) != null) {
+				// Read data (errors only: the first row gives the values of the error)
+				while ((entries.isEmpty() || !errorsOnly) && (data = tableReader.readNext()) != null) {
 					if (header.length == data.length) {
 						LinkedHashMap<String, String> map = new LinkedHashMap<String, String>();
 						for (int i = 0; i < header.length; i++) {

@@ -1,5 +1,8 @@
 package me.avogadro.mockjdbc.statement.impl;
 
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
 import java.sql.BatchUpdateException;
 import java.sql.CallableStatement;
 import java.sql.Connection;
@@ -9,11 +12,14 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.SQLIntegrityConstraintViolationException;
 import java.sql.SQLTimeoutException;
+import java.sql.Types;
 import java.util.HashMap;
 
 import org.junit.Assert;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 
 import me.avogadro.mockjdbc.MockJdbcDriver;
 
@@ -31,6 +37,9 @@ public final class InjectedErrorTest {
 
 	private static final String DUPLICATE_ENTRY = "SQLIntegrityConstraintViolationException,SQLState,ErrorCode\n"
 			+ "Duplicate entry,23000,1062";
+
+	@Rule
+	public TemporaryFolder folder = new TemporaryFolder();
 
 	private Connection connection;
 
@@ -408,6 +417,88 @@ public final class InjectedErrorTest {
 		Assert.assertNull(resource("orders_ERROR"));
 	}
 
+	/** the lookup of a write reads the header of the resource, never its rows (a write-only table has no use for them) */
+	@Test
+	public void testWriteIgnoresMalformedDataResource() throws SQLException {
+		MockJdbcDriver.addInMemoryTableResource("orders", "id,name\n1");
+
+		Assert.assertEquals(1, insertOrder("A").executeUpdate());
+
+		Assert.assertEquals("A", resource("orders_PARAMS"));
+		Assert.assertEquals("A", resource("orders_PARAMS#1"));
+		Assert.assertNull(resource("orders_ERROR"));
+	}
+
+	@Test
+	public void testWriteIgnoresMalformedDataResourceOfAnyKind() throws SQLException {
+		// a header the types of which are unknown, and a resource named after the parameters
+		MockJdbcDriver.addInMemoryTableResource("orders#1", "id|nosuchtype\n1");
+		MockJdbcDriver.addInMemoryTableResource("orders?B", "id,name\n1,2,3");
+
+		Assert.assertEquals(1, insertOrder("A").executeUpdate());
+		Assert.assertEquals(1, insertOrder("B").executeUpdate());
+		Assert.assertEquals("B", resource("orders_PARAMS#2"));
+	}
+
+	@Test
+	public void testWriteReadsOnlyTheFirstRowOfAnErrorResource() throws SQLException {
+		MockJdbcDriver.addInMemoryTableResource("orders", "SQLException,SQLState\nLocked,40001\nnot,a,row,of,this,header");
+
+		SQLException error = updateThrownBy(insertOrder("A"));
+
+		Assert.assertEquals("Locked", error.getMessage());
+		Assert.assertEquals("40001", error.getSQLState());
+		Assert.assertEquals("Locked", resource("orders_ERROR#1"));
+	}
+
+	@Test
+	public void testSchemaQualifiedWriteStopsAtADataResourceOfTheFullName() throws SQLException {
+		// the lookup is the one of a query: the data of the full name hides the last part
+		MockJdbcDriver.addInMemoryTableResource("dbo.orders", "id,name\n1,a");
+		MockJdbcDriver.addInMemoryTableResource("orders", "SQLTimeoutException");
+		PreparedStatement statement = connection.prepareStatement("INSERT INTO dbo.orders (id) VALUES (?)");
+		statement.setString(1, "A");
+
+		Assert.assertEquals(1, statement.executeUpdate());
+		Assert.assertEquals("A", resource("dbo.orders_PARAMS#1"));
+		Assert.assertNull(resource("dbo.orders_ERROR"));
+	}
+
+	private File csvFile(String name, String content) throws IOException {
+		File file = folder.newFile(name);
+		Files.write(file.toPath(), content.getBytes("UTF-8"));
+		return file;
+	}
+
+	@Test
+	public void testWriteFindsAnErrorResourceRegisteredAsAFile() throws Exception {
+		MockJdbcDriver.addTableResource("orders", csvFile("orders.csv", "SQLException,SQLState\nLocked,40001\n"));
+
+		SQLException error = updateThrownBy(insertOrder("A"));
+
+		Assert.assertEquals("Locked", error.getMessage());
+		Assert.assertEquals("40001", error.getSQLState());
+		Assert.assertEquals("A", resource("orders_PARAMS#1"));
+		Assert.assertEquals("Locked", resource("orders_ERROR#1"));
+	}
+
+	@Test
+	public void testWriteIgnoresADataFileWithAMalformedRow() throws Exception {
+		MockJdbcDriver.addTableResource("orders", csvFile("orders.csv", "id,name\n1\n"));
+
+		Assert.assertEquals(1, insertOrder("A").executeUpdate());
+		Assert.assertEquals("A", resource("orders_PARAMS#1"));
+	}
+
+	@Test
+	public void testWriteFindsAnErrorFileUnderTheLastPartOfTheName() throws Exception {
+		MockJdbcDriver.addTableResource("orders", csvFile("orders.csv", "SQLTimeoutException\n"));
+		PreparedStatement statement = connection.prepareStatement("INSERT INTO dbo.orders (id) VALUES (?)");
+		statement.setString(1, "A");
+
+		Assert.assertEquals("Error injected by mockjdbc for 'dbo.orders#1'", updateThrownBy(statement).getMessage());
+	}
+
 	@Test
 	public void testSelectThenUpdateShareTheCounter() throws SQLException {
 		MockJdbcDriver.addInMemoryTableResource("orders#2", DUPLICATE_ENTRY);
@@ -520,6 +611,52 @@ public final class InjectedErrorTest {
 		Assert.assertSame(SQLIntegrityConstraintViolationException.class, error.getClass());
 		Assert.assertEquals("X", resource("my_proc_PARAMS"));
 		Assert.assertEquals("Duplicate entry", resource("my_proc_ERROR"));
+	}
+
+	@Test
+	public void testSignatureOnThePlainNameServesTheNamedParameters() throws SQLException {
+		// the signature stays in spSave (read to bind by name), the error goes on spSave#1
+		MockJdbcDriver.addInMemoryTableResource("spSave", "in_name,out_size|integer\n,42");
+		MockJdbcDriver.addInMemoryTableResource("spSave#1", DUPLICATE_ENTRY);
+		CallableStatement call = connection.prepareCall("{call spSave(?,?)}");
+		call.setString("name", "mario");
+		call.registerOutParameter("size", Types.INTEGER);
+
+		Assert.assertEquals("Duplicate entry", executeThrownBy(call).getMessage());
+		Assert.assertEquals("mario", resource("spSave_PARAMS#1"));
+
+		// the retry sets the parameters again: they are cleared after every execution
+		call.setString("name", "mario");
+		call.execute();
+		Assert.assertEquals(42, call.getInt("size"));
+		Assert.assertEquals("mario", resource("spSave_PARAMS#2"));
+	}
+
+	@Test
+	public void testErrorOnThePlainProcedureNameHidesTheSignature() throws SQLException {
+		MockJdbcDriver.addInMemoryTableResource("spSave", DUPLICATE_ENTRY);
+		CallableStatement call = connection.prepareCall("{call spSave(?,?)}");
+
+		try {
+			call.setString("name", "mario");
+			Assert.fail("the signature is hidden by the error: the name cannot be bound");
+		} catch (SQLException e) {
+			Assert.assertTrue(e.getMessage(), e.getMessage().startsWith("Parameter 'name' unknown"));
+		}
+	}
+
+	@Test
+	public void testRetryOnTheSameStatementMustSetTheParametersAgain() throws SQLException {
+		MockJdbcDriver.addInMemoryTableResource("orders?B", DUPLICATE_ENTRY);
+		PreparedStatement statement = insertOrder("B");
+
+		updateThrownBy(statement);
+		// the parameters are cleared after every execution: an error bound to them no longer matches
+		Assert.assertEquals(1, statement.executeUpdate());
+		Assert.assertEquals("", resource("orders_PARAMS#2"));
+		statement.setString(1, "B");
+		Assert.assertEquals("Duplicate entry", updateThrownBy(statement).getMessage());
+		Assert.assertEquals("B", resource("orders_PARAMS#3"));
 	}
 
 	@Test
@@ -681,6 +818,29 @@ public final class InjectedErrorTest {
 		Assert.assertEquals("B", resource("orders_PARAMS#2"));
 		Assert.assertNull("the rows after the failing one are not run", resource("orders_PARAMS#3"));
 		Assert.assertEquals("Dup", resource("orders_ERROR#2"));
+		Assert.assertNull("the first row succeeded", resource("orders_ERROR#1"));
 		Assert.assertEquals("the batch is cleared", 0, statement.executeBatch().length);
+	}
+
+	@Test
+	public void testBatchWhoseFirstRowFailsHasNoCounts() throws SQLException {
+		MockJdbcDriver.addInMemoryTableResource("orders?A", DUPLICATE_ENTRY);
+		PreparedStatement statement = connection.prepareStatement("INSERT INTO orders (id) VALUES (?)");
+		for (String id : new String[] { "A", "B" }) {
+			statement.setString(1, id);
+			statement.addBatch();
+		}
+
+		try {
+			statement.executeBatch();
+			Assert.fail("the first row must fail the batch");
+		} catch (BatchUpdateException e) {
+			Assert.assertArrayEquals("no row ran before the failing one", new int[0], e.getUpdateCounts());
+			Assert.assertEquals("Duplicate entry", e.getMessage());
+		}
+
+		Assert.assertEquals("A", resource("orders_PARAMS#1"));
+		Assert.assertNull("the second row is not run", resource("orders_PARAMS#2"));
+		Assert.assertEquals("Duplicate entry", resource("orders_ERROR#1"));
 	}
 }

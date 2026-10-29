@@ -268,7 +268,8 @@ public final class JarReleaseTest {
 		}
 
 		// an error resource: the driver builds the exception, and records its message as a Dynamic Process Property.
-		// The class is checked by name: it is a JDK class, so the comparison does not pin the library class loader
+		// The class is checked by name, so the test does not depend on which loader supplies it, and the test keeps no
+		// reference to the exception
 		try {
 			firstValue(connection, "SELECT * FROM broken", "a");
 			Assert.fail("the error resource must make the query throw");

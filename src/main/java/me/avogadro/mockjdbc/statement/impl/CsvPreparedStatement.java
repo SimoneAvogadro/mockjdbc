@@ -47,7 +47,8 @@ public class CsvPreparedStatement extends PreparedStatementAdapter {
     private String targetTable4Updates = null;
     
 	private final CsvStatement statement;
-	private final Map<String, File> tableResources;
+	/** the tables of the connection (also used by {@link CsvCallableStatement}) */
+	final Map<String, File> tableResources;
 	private final String sql;
 
 	/** result set of the last query (also read by {@link CsvCallableStatement}) */

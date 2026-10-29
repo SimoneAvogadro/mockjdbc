@@ -19,6 +19,12 @@ Unreleased
    `mockjdbc_<name>_error`). A batch stops at the failing row with a `BatchUpdateException` (the counts of the earlier
    rows, the declared exception as its cause). The metadata (`getColumns`, `getProcedureColumns`, ...) ignores error
    resources
+ * Changed behaviour for existing users: `PreparedStatement.executeBatch` now wraps any `SQLException` of a row in a
+   `BatchUpdateException` (with the counts of the earlier rows) and stops there; `CsvStatement.loadTable` now declares
+   `throws SQLException`; INSERT, UPDATE, DELETE, procedure calls and steps now look up the resource of their name to
+   find an error resource. That lookup reads only the header of the resource (and the first row of an error resource),
+   never the rows of a data resource, so a write is not slowed down by a large mock and is not affected by a malformed
+   row of a table that is only written
  * Tests: `JarReleaseTest` loads the driver as Boomi loads a Custom Library (a class loader of its own, a pooled
    thread that outlives it, no `close()`), uses every feature and fails if the class loader stays referenced or a jar
    of the library stays open (on Windows: cannot be deleted). It guards against the causes of the jar locking seen in
@@ -29,7 +35,10 @@ Unreleased
    schema-qualified tables, batches); `LocaleIndependenceTest` (class names with `I` under the Italian and Turkish
    locales), `MockDatabaseMetaDataTest` (metadata ignores error resources) and `BoomiExecutionUtilTest` (`_ERROR` as
    Dynamic Process Properties) add their checks. `JarReleaseTest` also runs an error resource, so the jar release
-   guard covers the feature
+   guard covers the feature. The lookup of a write is tested on a malformed data resource (in memory and as a file), on
+   an error resource registered as a file, in a `/tables/` directory and in a jar (`ClasspathTablesTest`, which also
+   checks that the jar stays closed), on a batch whose first row fails and on `getProcedureColumns` with an error on
+   the procedure
  * Documentation: FEATURES.md section 12, "Simulating errors (SQLException)": the format, targeting, what an injected
    error leaves behind, batches, metadata and Database V2, a lost connection and a Boomi Try/Catch example. The API
    summary is now section 13; sections 1-11 keep their numbers

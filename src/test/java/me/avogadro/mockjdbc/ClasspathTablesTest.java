@@ -13,7 +13,9 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.sql.Connection;
 import java.sql.Driver;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.util.Properties;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
@@ -39,11 +41,17 @@ public final class ClasspathTablesTest {
 		Writer writer = new FileWriter(new File(tables, "dirtable.csv"));
 		writer.write("name\nfrom directory\n");
 		writer.close();
+		writer = new FileWriter(new File(tables, "dirfail.csv"));
+		writer.write("SQLException,SQLState\nfrom directory,40001\n");
+		writer.close();
 
 		jar = File.createTempFile("mockjdbc-tables", ".jar");
 		JarOutputStream out = new JarOutputStream(new FileOutputStream(jar));
 		out.putNextEntry(new JarEntry("tables/jartable.csv"));
 		out.write("name\nfrom jar\n".getBytes(Charset.defaultCharset()));
+		out.closeEntry();
+		out.putNextEntry(new JarEntry("tables/jarfail.csv"));
+		out.write("SQLException,SQLState\nfrom jar,40001\n".getBytes(Charset.defaultCharset()));
 		out.closeEntry();
 		out.close();
 	}
@@ -51,6 +59,7 @@ public final class ClasspathTablesTest {
 	@After
 	public void cleanup() {
 		new File(new File(directory, "tables"), "dirtable.csv").delete();
+		new File(new File(directory, "tables"), "dirfail.csv").delete();
 		new File(directory, "tables").delete();
 		directory.delete();
 		jar.delete();
@@ -59,6 +68,18 @@ public final class ClasspathTablesTest {
 	private static String firstName(Connection connection, String table) throws Exception {
 		ResultSet resultSet = connection.createStatement().executeQuery("SELECT * FROM " + table);
 		return resultSet.next() ? resultSet.getString("name") : null;
+	}
+
+	/** the message of the SQLException thrown by an INSERT into the table, or null if it did not fail */
+	private static String failureOfInsertInto(Connection connection, String table) throws Exception {
+		PreparedStatement statement = connection.prepareStatement("INSERT INTO " + table + " (a) VALUES (?)");
+		statement.setString(1, "A");
+		try {
+			statement.executeUpdate();
+		} catch (SQLException e) {
+			return e.getMessage();
+		}
+		return null;
 	}
 
 	/** open file descriptors of this process on the given file, -1 if they cannot be listed (not Linux) */
@@ -102,6 +123,34 @@ public final class ClasspathTablesTest {
 		}
 
 		// once its class loader is closed the jar must not stay open: reading the table must not cache it
+		int handles = openHandles(jar);
+		if (handles >= 0) {
+			Assert.assertEquals("open handles on the jar with /tables/", 0, handles);
+		}
+		Assert.assertTrue("the jar with /tables/ can be deleted", jar.delete());
+	}
+
+	/** a write looks for an error resource there too, and reading its header does not leave the jar open */
+	@Test
+	public void testWritesFindErrorResourcesInADirectoryAndInAJar() throws Exception {
+		URLClassLoader loader = IsolatedDriver.newClassLoader(directory.toURI().toURL(), jar.toURI().toURL());
+		try {
+			Class<?> driverClass = Class.forName("me.avogadro.mockjdbc.MockJdbcDriver", true, loader);
+			Driver driver = (Driver) driverClass.getDeclaredConstructor().newInstance();
+			Connection connection = driver.connect("any", new Properties());
+
+			Assert.assertEquals("from directory", failureOfInsertInto(connection, "dirfail"));
+			Assert.assertEquals("from jar", failureOfInsertInto(connection, "JarFail"));
+			// a table that is data, or not defined, is written without a failure
+			Assert.assertNull(failureOfInsertInto(connection, "dirtable"));
+			Assert.assertNull(failureOfInsertInto(connection, "jartable"));
+			Assert.assertNull(failureOfInsertInto(connection, "nothing_here"));
+
+			driverClass.getMethod("deregister").invoke(null);
+		} finally {
+			loader.close();
+		}
+
 		int handles = openHandles(jar);
 		if (handles >= 0) {
 			Assert.assertEquals("open handles on the jar with /tables/", 0, handles);
