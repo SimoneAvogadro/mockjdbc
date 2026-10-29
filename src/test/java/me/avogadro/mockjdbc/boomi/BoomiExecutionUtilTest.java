@@ -222,6 +222,29 @@ public final class BoomiExecutionUtilTest {
 	}
 
 	@Test
+	public void testInjectedErrorOnAWriteIsExposedAsDynamicProcessProperties() throws Exception {
+		BoomiExecutionUtil.lookup(FakeExecutionUtil.class.getName());
+
+		FakeExecutionUtil.PROPERTIES.put("mockjdbc_orders#1", "SQLException,SQLState\nboom,40001");
+		PreparedStatement statement = DriverManager.getConnection("any")
+				.prepareStatement("INSERT INTO orders (id) VALUES (?)");
+		statement.setString(1, "A");
+		try {
+			statement.executeUpdate();
+			Assert.fail("the error resource must throw");
+		} catch (SQLException expected) {
+			Assert.assertEquals("boom", expected.getMessage());
+		}
+
+		Assert.assertEquals("boom", FakeExecutionUtil.PROPERTIES.get("mockjdbc_orders_ERROR"));
+		Assert.assertEquals("boom", FakeExecutionUtil.PROPERTIES.get("mockjdbc_orders_error"));
+		Assert.assertEquals("boom", FakeExecutionUtil.PROPERTIES.get("mockjdbc_orders_ERROR#1"));
+		Assert.assertEquals("boom", FakeExecutionUtil.PROPERTIES.get("mockjdbc_orders_error#1"));
+		// the parameters were captured before the throw
+		Assert.assertEquals("A", FakeExecutionUtil.PROPERTIES.get("mockjdbc_orders_PARAMS#1"));
+	}
+
+	@Test
 	public void testCapturedParamsOutsideBoomiSetNoProperty() throws Exception {
 		BoomiExecutionUtil.lookup(BoomiExecutionUtil.EXECUTION_UTIL_CLASS);
 

@@ -1,5 +1,6 @@
 package me.avogadro.mockjdbc.statement.impl;
 
+import java.sql.CallableStatement;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
@@ -338,5 +339,286 @@ public final class InjectedErrorTest {
 		// a data resource, or no resource at all, is not an injected error
 		Assert.assertNull(CsvStatement.findInjectedError(noFiles, "orders", "42", 1));
 		Assert.assertNull(CsvStatement.findInjectedError(noFiles, "missing", null, 1));
+	}
+
+	/** runs the write with executeUpdate(), which must throw an SQLException */
+	private SQLException updateThrownBy(PreparedStatement statement) {
+		try {
+			statement.executeUpdate();
+		} catch (SQLException e) {
+			return e;
+		}
+		throw new AssertionError("no exception thrown by executeUpdate()");
+	}
+
+	/** runs the statement with execute(), which must throw an SQLException */
+	private SQLException executeThrownBy(PreparedStatement statement) {
+		try {
+			statement.execute();
+		} catch (SQLException e) {
+			return e;
+		}
+		throw new AssertionError("no exception thrown by execute()");
+	}
+
+	private PreparedStatement insertOrder(String id) throws SQLException {
+		PreparedStatement statement = connection.prepareStatement("INSERT INTO orders (id) VALUES (?)");
+		statement.setString(1, id);
+		return statement;
+	}
+
+	private static String resource(String name) {
+		return MockJdbcDriver.getInMemoryTableResource(name);
+	}
+
+	@Test
+	public void testInsertCapturesThenThrows() throws SQLException {
+		MockJdbcDriver.addInMemoryTableResource("orders#1", DUPLICATE_ENTRY);
+
+		SQLException error = updateThrownBy(insertOrder("A"));
+
+		Assert.assertSame(SQLIntegrityConstraintViolationException.class, error.getClass());
+		Assert.assertEquals("Duplicate entry", error.getMessage());
+		Assert.assertEquals("23000", error.getSQLState());
+		Assert.assertEquals(1062, error.getErrorCode());
+		// what the process tried to write is captured, then the error is recorded
+		Assert.assertEquals("A", resource("orders_PARAMS"));
+		Assert.assertEquals("A", resource("orders_PARAMS#1"));
+		Assert.assertEquals("Duplicate entry", resource("orders_ERROR"));
+		Assert.assertEquals("Duplicate entry", resource("orders_ERROR#1"));
+	}
+
+	@Test
+	public void testWriteDefaultMessageNamesTheCountedName() throws SQLException {
+		MockJdbcDriver.addInMemoryTableResource("orders", "SQLTimeoutException");
+
+		Assert.assertEquals("Error injected by mockjdbc for 'orders#1'", updateThrownBy(insertOrder("A")).getMessage());
+		Assert.assertEquals("Error injected by mockjdbc for 'orders#2'", updateThrownBy(insertOrder("B")).getMessage());
+		Assert.assertEquals("Error injected by mockjdbc for 'orders#2'", resource("orders_ERROR"));
+	}
+
+	@Test
+	public void testWriteIgnoresDataResource() throws SQLException {
+		MockJdbcDriver.addInMemoryTableResource("orders", "id\n1");
+
+		Assert.assertEquals(1, insertOrder("A").executeUpdate());
+
+		Assert.assertEquals("A", resource("orders_PARAMS#1"));
+		Assert.assertNull(resource("orders_ERROR"));
+	}
+
+	@Test
+	public void testSelectThenUpdateShareTheCounter() throws SQLException {
+		MockJdbcDriver.addInMemoryTableResource("orders#2", DUPLICATE_ENTRY);
+		MockJdbcDriver.addInMemoryTableResource("orders", "id\n1");
+
+		Assert.assertEquals(1, rows(connection.createStatement().executeQuery("SELECT * FROM orders")));
+		PreparedStatement update = connection.prepareStatement("UPDATE orders SET id = ?");
+		update.setString(1, "A");
+
+		Assert.assertEquals("Duplicate entry", updateThrownBy(update).getMessage());
+		Assert.assertEquals("A", resource("orders_PARAMS#2"));
+		Assert.assertEquals("Duplicate entry", resource("orders_ERROR#2"));
+	}
+
+	@Test
+	public void testWriteParamsTarget() throws SQLException {
+		MockJdbcDriver.addInMemoryTableResource("orders?B", DUPLICATE_ENTRY);
+
+		Assert.assertEquals(1, insertOrder("A").executeUpdate());
+		SQLException error = updateThrownBy(insertOrder("B"));
+
+		Assert.assertEquals("Duplicate entry", error.getMessage());
+		Assert.assertEquals("B", resource("orders_PARAMS"));
+		Assert.assertEquals("B", resource("orders_PARAMS#2"));
+		Assert.assertEquals("Duplicate entry", resource("orders_ERROR#2"));
+		Assert.assertNull(resource("orders_ERROR#1"));
+	}
+
+	@Test
+	public void testExecuteInsertCapturesThenThrows() throws SQLException {
+		MockJdbcDriver.addInMemoryTableResource("orders#1", DUPLICATE_ENTRY);
+		PreparedStatement statement = insertOrder("A");
+
+		SQLException error = executeThrownBy(statement);
+
+		Assert.assertSame(SQLIntegrityConstraintViolationException.class, error.getClass());
+		Assert.assertEquals("Duplicate entry", error.getMessage());
+		Assert.assertEquals("A", resource("orders_PARAMS"));
+		Assert.assertEquals("A", resource("orders_PARAMS#1"));
+		Assert.assertEquals("Duplicate entry", resource("orders_ERROR#1"));
+		Assert.assertNull("a failed execution has no result", statement.getResultSet());
+	}
+
+	@Test
+	public void testExecuteProcedureCapturesOnce() throws SQLException {
+		MockJdbcDriver.addInMemoryTableResource("my_proc", DUPLICATE_ENTRY);
+		MockJdbcDriver.addInMemoryTableResource("my_proc#2", "out\nok");
+		PreparedStatement statement = connection.prepareStatement("EXEC my_proc ?");
+		statement.setString(1, "X");
+
+		SQLException error = executeThrownBy(statement);
+
+		Assert.assertEquals("Duplicate entry", error.getMessage());
+		Assert.assertEquals("X", resource("my_proc_PARAMS"));
+		Assert.assertEquals("X", resource("my_proc_PARAMS#1"));
+		Assert.assertNull("the query and the write are one use of the name", resource("my_proc_PARAMS#2"));
+		Assert.assertEquals("Duplicate entry", resource("my_proc_ERROR#1"));
+		Assert.assertNull("the error is recorded once", resource("my_proc_ERROR#2"));
+
+		// the counter advanced once: the second execution is the second use of the name
+		// (the parameters are cleared after each execution)
+		statement.setString(1, "X");
+		Assert.assertTrue(statement.execute());
+		ResultSet retry = statement.getResultSet();
+		Assert.assertTrue(retry.next());
+		Assert.assertEquals("ok", retry.getString("out"));
+		Assert.assertEquals("X", resource("my_proc_PARAMS#2"));
+		Assert.assertNull(resource("my_proc_PARAMS#3"));
+		Assert.assertNull(resource("my_proc_ERROR#2"));
+	}
+
+	@Test
+	public void testExecuteProcedureKeepsTheDeclaredClassAndSqlState() throws SQLException {
+		MockJdbcDriver.addInMemoryTableResource("my_proc", "SQLTimeoutException,SQLState\ntoo slow,HYT00");
+		PreparedStatement statement = connection.prepareStatement("EXEC my_proc ?");
+		statement.setString(1, "X");
+
+		SQLException error = executeThrownBy(statement);
+
+		Assert.assertSame(SQLTimeoutException.class, error.getClass());
+		Assert.assertEquals("HYT00", error.getSQLState());
+		Assert.assertEquals("too slow", resource("my_proc_ERROR"));
+	}
+
+	@Test
+	public void testExecuteSelectThrowsWithoutCapturingParams() throws SQLException {
+		MockJdbcDriver.addInMemoryTableResource("orders#2", DUPLICATE_ENTRY);
+		MockJdbcDriver.addInMemoryTableResource("orders", "id\n1");
+		PreparedStatement statement = connection.prepareStatement("SELECT * FROM orders WHERE id = ?");
+		statement.setInt(1, 42);
+		Assert.assertTrue(statement.execute());
+		Assert.assertNotNull(statement.getResultSet());
+
+		SQLException error = executeThrownBy(statement);
+
+		Assert.assertEquals("Duplicate entry", error.getMessage());
+		Assert.assertNull("the result of the previous execution is gone", statement.getResultSet());
+		Assert.assertNull("the parameters of a SELECT are not captured", resource("orders_PARAMS"));
+		Assert.assertEquals("Duplicate entry", resource("orders_ERROR#2"));
+	}
+
+	@Test
+	public void testCallableStatementThrows() throws SQLException {
+		MockJdbcDriver.addInMemoryTableResource("my_proc", DUPLICATE_ENTRY);
+		CallableStatement statement = connection.prepareCall("{call my_proc(?)}");
+		statement.setString(1, "X");
+
+		SQLException error = executeThrownBy(statement);
+
+		Assert.assertSame(SQLIntegrityConstraintViolationException.class, error.getClass());
+		Assert.assertEquals("X", resource("my_proc_PARAMS"));
+		Assert.assertEquals("Duplicate entry", resource("my_proc_ERROR"));
+	}
+
+	@Test
+	public void testProcedureThroughExecuteUpdate() throws SQLException {
+		MockJdbcDriver.addInMemoryTableResource("my_proc?X", DUPLICATE_ENTRY);
+		PreparedStatement statement = connection.prepareStatement("EXEC my_proc ?");
+		statement.setString(1, "X");
+
+		Assert.assertEquals("Duplicate entry", updateThrownBy(statement).getMessage());
+		Assert.assertEquals("X", resource("my_proc_PARAMS#1"));
+		Assert.assertEquals("Duplicate entry", resource("my_proc_ERROR#1"));
+	}
+
+	@Test
+	public void testQueryIdWrite() throws SQLException {
+		MockJdbcDriver.addInMemoryTableResource("q.save", DUPLICATE_ENTRY);
+		PreparedStatement statement = connection.prepareStatement("-- QUERY_ID: q.save\nINSERT INTO t (a) VALUES (?)");
+		statement.setString(1, "A");
+
+		Assert.assertEquals("Duplicate entry", updateThrownBy(statement).getMessage());
+		Assert.assertEquals("A", resource("q.save_PARAMS"));
+		Assert.assertEquals("A", resource("q.save_PARAMS#1"));
+		Assert.assertEquals("Duplicate entry", resource("q.save_ERROR#1"));
+	}
+
+	@Test
+	public void testStepWrite() throws SQLException {
+		MockJdbcDriver.addInMemoryTableResource(0, "SQLTimeoutException");
+		PreparedStatement statement = connection.prepareStatement("INSERT INTO t (a) VALUES (?)");
+		statement.setString(1, "A");
+
+		SQLException error = updateThrownBy(statement);
+
+		Assert.assertSame(SQLTimeoutException.class, error.getClass());
+		Assert.assertEquals("Error injected by mockjdbc for '##STEP0'", error.getMessage());
+		Assert.assertEquals("A", resource("##STEP0_PARAMS"));
+		Assert.assertEquals(error.getMessage(), resource("##STEP0_ERROR"));
+		// a step is a sequence: no occurrence number
+		Assert.assertNull(resource("##STEP0_PARAMS#1"));
+		Assert.assertNull(resource("##STEP0_ERROR#1"));
+	}
+
+	@Test
+	public void testStepWriteCountStillWorks() throws SQLException {
+		MockJdbcDriver.addInMemoryTableResource(0, "3");
+		PreparedStatement statement = connection.prepareStatement("INSERT INTO t (a) VALUES (?)");
+		statement.setString(1, "A");
+
+		Assert.assertEquals(3, statement.executeUpdate());
+		Assert.assertEquals("A", resource("##STEP0_PARAMS"));
+		Assert.assertNull(resource("##STEP0_ERROR"));
+	}
+
+	@Test
+	public void testExecuteStepCapturesOnce() throws SQLException {
+		MockJdbcDriver.addInMemoryTableResource(0, DUPLICATE_ENTRY);
+		PreparedStatement statement = connection.prepareStatement("INSERT INTO t (a) VALUES (?)");
+		statement.setString(1, "A");
+
+		Assert.assertEquals("Duplicate entry", executeThrownBy(statement).getMessage());
+		Assert.assertEquals("A", resource("##STEP0_PARAMS"));
+		Assert.assertEquals("Duplicate entry", resource("##STEP0_ERROR"));
+		Assert.assertNull(resource("##STEP0_ERROR#1"));
+	}
+
+	@Test
+	public void testSchemaQualifiedWrite() throws SQLException {
+		MockJdbcDriver.addInMemoryTableResource("orders", "SQLTimeoutException");
+		PreparedStatement statement = connection.prepareStatement("INSERT INTO dbo.orders (id) VALUES (?)");
+		statement.setString(1, "A");
+
+		SQLException error = updateThrownBy(statement);
+
+		// the error is found under the last part, the occurrence is counted on the full name
+		Assert.assertEquals("Error injected by mockjdbc for 'dbo.orders#1'", error.getMessage());
+		Assert.assertEquals("A", resource("dbo.orders_PARAMS"));
+		Assert.assertEquals("A", resource("dbo.orders_PARAMS#1"));
+		Assert.assertEquals(error.getMessage(), resource("dbo.orders_ERROR"));
+		Assert.assertEquals(error.getMessage(), resource("dbo.orders_ERROR#1"));
+		Assert.assertNull(resource("orders_ERROR"));
+	}
+
+	@Test
+	public void testSchemaQualifiedWriteFullNameWins() throws SQLException {
+		MockJdbcDriver.addInMemoryTableResource("dbo.orders", DUPLICATE_ENTRY);
+		MockJdbcDriver.addInMemoryTableResource("orders", "SQLTimeoutException");
+		PreparedStatement statement = connection.prepareStatement("INSERT INTO dbo.orders (id) VALUES (?)");
+		statement.setString(1, "A");
+
+		Assert.assertSame(SQLIntegrityConstraintViolationException.class, updateThrownBy(statement).getClass());
+	}
+
+	@Test
+	public void testInvalidErrorResourceOnAWriteIsThrownAndRecorded() throws SQLException {
+		MockJdbcDriver.addInMemoryTableResource("orders", "SQLException,Severity\nboom,high");
+
+		SQLException error = updateThrownBy(insertOrder("A"));
+
+		Assert.assertTrue(error.getMessage(), error.getMessage().startsWith("Invalid error resource 'orders#1': "));
+		Assert.assertEquals("A", resource("orders_PARAMS#1"));
+		Assert.assertEquals(error.getMessage(), resource("orders_ERROR#1"));
 	}
 }

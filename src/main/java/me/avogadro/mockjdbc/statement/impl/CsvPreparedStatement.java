@@ -45,6 +45,7 @@ public class CsvPreparedStatement extends PreparedStatementAdapter {
     private String targetTable4Updates = null;
     
 	private final CsvStatement statement;
+	private final Map<String, File> tableResources;
 	private final String sql;
 
 	/** result set of the last query (also read by {@link CsvCallableStatement}) */
@@ -65,6 +66,7 @@ public class CsvPreparedStatement extends PreparedStatementAdapter {
 	 */
 	public CsvPreparedStatement(Map<String, File> tableResources, String sql) {
 		this.statement = new CsvStatement(tableResources);
+		this.tableResources = tableResources;
 		this.sql = sql;
 	}
 
@@ -74,75 +76,111 @@ public class CsvPreparedStatement extends PreparedStatementAdapter {
 	 * otherwise return 0.
 	 * The parameters are captured as <code>&lt;name&gt;_PARAMS</code> for every statement except SELECTs
 	 * (INSERT, UPDATE, DELETE, stored procedure calls, statements with a QUERY_ID or TESTCASE comment or a step resource).
+	 * <p>
+	 * If the target (the table, the QUERY_ID or TESTCASE, the procedure or the step) has an error resource (see
+	 * {@link InjectedError}), the parameters are captured as usual and then the error is recorded and thrown. A data
+	 * resource is ignored by a write.
 	 */
 	@Override
 	public int executeUpdate(String sql) throws SQLException {
+		return write(sql, false);
+	}
+
+	/**
+	 * @param queryFailed <code>true</code> when {@link #execute(String)} runs it after its query found the error
+	 *        resource of this statement and recorded it: only the parameters are captured, the error is not looked up
+	 *        (nor recorded) a second time
+	 */
+	private int write(String sql, boolean queryFailed) throws SQLException {
 
 		targetTable4Updates = null;
 		final boolean isSelect = SELECT_PATTERN.matcher(sql).matches();
 		boolean isStep = false;
+		boolean isTable = false;
+		// the occurrence number is computed once: the error lookup and the _PARAMS#n capture share it
+		boolean capture = false;
+		String paramsString = null;
+		int occurrence = 0;
+		SQLException injected = null;
+		int res;
 		if (!reuseQueryOccurrence) {
 			MockJdbcDriver.beforeExecution();
 		}
 		try {
-			int res = 1;
 			String stepRes = MockJdbcDriver.getInMemoryTableResourceForCurrentStep();
-			
+
 			if (stepRes!=null) {
 				targetTable4Updates = MockJdbcDriver.getStepName();
 				isStep = true;
 				try {
-					return Integer.parseInt(stepRes);
+					res = Integer.parseInt(stepRes);
 				} catch (NumberFormatException nfe) {
-					// that's ok, it's a simple resultset rather then an update query
-					return 0;
+					// that's ok, it's a simple resultset rather then an update query (or an error resource)
+					res = 0;
+				}
+			} else {
+				// Try to check for a special heading comment within SQL
+				targetTable4Updates = CsvStatement.matchQueryId(sql);
+
+				if (targetTable4Updates == null) {
+					// Try to interpret SQL as an INSERT, UPDATE or DELETE on a table (full name: dbo.users_PARAMS)
+					targetTable4Updates = SqlNames.writeTable(sql);
+					isTable = targetTable4Updates != null;
+				}
+
+				if (targetTable4Updates == null) {
+					targetTable4Updates = CsvStatement.matchStoredProcedureCall(sql);
+				}
+				res = targetTable4Updates == null ? 0 : 1;
+			}
+
+			// the parameters of a SELECT are not captured: they only select data. It does not count as a use of the
+			// name either, so it cannot target an error
+			if (targetTable4Updates != null && !isSelect) {
+				paramsString = buildParamsString();
+				// steps are not numbered
+				occurrence = isStep ? 0 : captureOccurrence();
+				capture = true;
+				// the lookup of a query, but only an error resource matters: a data resource is ignored
+				if (!queryFailed) {
+					injected = isTable
+							? CsvStatement.findInjectedTableError(tableResources, targetTable4Updates, paramsString, occurrence)
+							: CsvStatement.findInjectedError(tableResources, targetTable4Updates, paramsString, occurrence);
 				}
 			}
 
-			// Try to check for a special heading comment within SQL
-			String queryId = CsvStatement.matchQueryId(sql);
-			if (queryId != null) {
-				targetTable4Updates = queryId;
-				return res;
-			}
-			
-			// Try to interpret SQL as an INSERT, UPDATE or DELETE on a table (full name: dbo.users_PARAMS)
-			String table = SqlNames.writeTable(sql);
-			if (table != null) {
-				targetTable4Updates = table;
-				return res;
-			}
-
-			String procedure = CsvStatement.matchStoredProcedureCall(sql);
-			if (procedure != null) {
-				targetTable4Updates = procedure;
-				return res;
-			}
-
-			return 0;
-		
 		} finally {
-			// the parameters of a SELECT are not captured: they only select data
-			if (targetTable4Updates!=null && !isSelect) {
-				String paramsResource = targetTable4Updates+PARAMS_SUFFIX;
-				String paramsValue = buildParamsString();
-				// <name>_PARAMS always holds the latest parameters (the common single-write test)
-				MockJdbcDriver.addInMemoryTableResource( paramsResource, paramsValue );
-				// inside Boomi also expose them as Dynamic Process Properties (e.g. mockjdbc_users_PARAMS and mockjdbc_users_params)
-				BoomiExecutionUtil.setResourceProperty( paramsResource, paramsValue );
-				// <name>_PARAMS#n keeps the parameters of the n-th use of the name (steps are not numbered)
-				if (!isStep) {
-					String occurrenceResource = paramsResource + MockJdbcDriver.OCCURRENCE_SEPARATOR + captureOccurrence();
-					MockJdbcDriver.addInMemoryTableResource( occurrenceResource, paramsValue );
-					BoomiExecutionUtil.setResourceProperty( occurrenceResource, paramsValue );
-				}
+			if (capture) {
+				captureParams(paramsString, isStep, occurrence);
 			}
-			
+
 			params = new Object[MAX_PARAMS];
-			
-			
 		}
 
+		// the parameters are captured: now fail
+		if (injected != null) {
+			InjectedError.record(targetTable4Updates, occurrence, injected);
+			throw injected;
+		}
+		return res;
+	}
+
+	/**
+	 * Captures the parameters of a write as <code>&lt;name&gt;_PARAMS</code> (the latest) and, but for a step,
+	 * <code>&lt;name&gt;_PARAMS#&lt;occurrence&gt;</code>.
+	 */
+	private void captureParams(String paramsValue, boolean isStep, int occurrence) {
+		String paramsResource = targetTable4Updates+PARAMS_SUFFIX;
+		// <name>_PARAMS always holds the latest parameters (the common single-write test)
+		MockJdbcDriver.addInMemoryTableResource( paramsResource, paramsValue );
+		// inside Boomi also expose them as Dynamic Process Properties (e.g. mockjdbc_users_PARAMS and mockjdbc_users_params)
+		BoomiExecutionUtil.setResourceProperty( paramsResource, paramsValue );
+		// <name>_PARAMS#n keeps the parameters of the n-th use of the name (steps are not numbered)
+		if (!isStep) {
+			String occurrenceResource = paramsResource + MockJdbcDriver.OCCURRENCE_SEPARATOR + occurrence;
+			MockJdbcDriver.addInMemoryTableResource( occurrenceResource, paramsValue );
+			BoomiExecutionUtil.setResourceProperty( occurrenceResource, paramsValue );
+		}
 	}
 
 	/**
@@ -325,10 +363,28 @@ public class CsvPreparedStatement extends PreparedStatementAdapter {
 	public boolean execute(String sql) throws SQLException {
 		try {
 			statement.paramsString = buildParamsString();
-			currentResultSet = statement.executeQuery(sql);
+			try {
+				currentResultSet = statement.executeQuery(sql);
+			} catch (SQLException e) {
+				if (e != statement.injectedError) {
+					throw e;
+				}
+				// the query found an error resource and recorded it: capture the parameters (counted as the same use of
+				// the name as the query, as for a success), then fail with that very exception
+				currentResultSet = null;
+				reuseQueryOccurrence = true;
+				write(sql, true);
+				throw e;
+			}
 			// try up update (generate params), counted as the same use of the name as the query
 			reuseQueryOccurrence = true;
-			executeUpdate(sql);
+			try {
+				executeUpdate(sql);
+			} catch (SQLException e) {
+				// the write found an error resource: a failed execution has no result set
+				currentResultSet = null;
+				throw e;
+			}
 			return true;
 		} finally {
 			reuseQueryOccurrence = false;

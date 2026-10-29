@@ -278,14 +278,24 @@ public final class CsvStatement extends StatementAdapter {
 	private ResultSet createTableResultSet(String tableName) {
 		lastOccurrenceName = tableName;
 		lastOccurrence = MockJdbcDriver.nextOccurrence(tableName);
-		ResultSet resultSet = findResultSet(tableResources, tableName, paramsString, lastOccurrence);
-		String shortName = SqlNames.lastPart(tableName);
-		if (resultSet == null && shortName != null) {
-			resultSet = findResultSet(tableResources, shortName, paramsString, lastOccurrence);
-		}
+		ResultSet resultSet = findTableResultSet(tableResources, tableName, paramsString, lastOccurrence);
 		if (resultSet == null) {
 			LOGGER.info("No table definition found for '{}', using MockResultSet.", tableName);
 			return new MockResultSet();
+		}
+		return resultSet;
+	}
+
+	/**
+	 * @return the data of a table: the resource of the full name (<code>dbo.customers</code>), then the one of its last
+	 *         part (<code>customers</code>) with the same occurrence number; <code>null</code> if there is none
+	 */
+	private static ResultSet findTableResultSet(Map<String, File> tableResources, String tableName,
+			String paramsString, int occurrence) {
+		ResultSet resultSet = findResultSet(tableResources, tableName, paramsString, occurrence);
+		String shortName = SqlNames.lastPart(tableName);
+		if (resultSet == null && shortName != null) {
+			resultSet = findResultSet(tableResources, shortName, paramsString, occurrence);
 		}
 		return resultSet;
 	}
@@ -322,6 +332,19 @@ public final class CsvStatement extends StatementAdapter {
 			int occurrence) throws SQLException {
 		ResultSet resultSet = findResultSet(tableResources, name, paramsString, occurrence);
 		return resultSet == null ? null : InjectedError.of(resultSet, countedName(name, occurrence));
+	}
+
+	/**
+	 * Like {@link #findInjectedError} for the table of a write: the full name (<code>dbo.orders</code>) first, then its
+	 * last part (<code>orders</code>), as a query on a table does. The occurrence is counted on the full name, which is
+	 * also the name of the default message and of the record, wherever the resource is found.
+	 *
+	 * @param tableName the full name of the table
+	 */
+	static SQLException findInjectedTableError(Map<String, File> tableResources, String tableName,
+			String paramsString, int occurrence) throws SQLException {
+		ResultSet resultSet = findTableResultSet(tableResources, tableName, paramsString, occurrence);
+		return resultSet == null ? null : InjectedError.of(resultSet, countedName(tableName, occurrence));
 	}
 
 	/**
