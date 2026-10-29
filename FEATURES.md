@@ -921,7 +921,9 @@ throw an injected error.
   n-th use (a step has no `#n`), e.g. `MockJdbcDriver.getInMemoryTableResource("orders_ERROR#1")`. They prove that the
   injection fired. Inside Boomi they are also Dynamic Process Properties, as written and in lower case
   (`mockjdbc_orders_ERROR`, `mockjdbc_orders_error`, plus the `#n` copies), never persisted, exactly like `_PARAMS`
-  ([Reading captured parameters in the process](#reading-captured-parameters-in-the-process)).
+  ([Reading captured parameters in the process](#reading-captured-parameters-in-the-process)). For a schema-qualified
+  table the key uses the **full name**, like `_PARAMS`, wherever the error resource is found: `INSERT INTO dbo.orders`
+  records `dbo.orders_ERROR` and `dbo.orders_ERROR#1` (never `orders_ERROR`), inside Boomi `mockjdbc_dbo.orders_error`.
 
 ### Batches
 
