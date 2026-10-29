@@ -58,6 +58,8 @@ assertEquals("3,Anna", MockJdbcDriver.getInMemoryTableResource("users_PARAMS"));
 * **Stored procedures**: `CallableStatement` with OUT, IN OUT and return value parameters declared by a CSV header
   (`in_name,out_size|integer,out_status`), or a result set; parameters described by `getProcedureColumns` –
   [section 3 c](FEATURES.md#c-stored-procedures).
+* **Errors on demand**: a mock can make a statement throw the `SQLException` you choose (class, SQLState, error code),
+  also for one occurrence or one parameter value – [section 12](FEATURES.md#12-simulating-errors-sqlexception).
 * **Realistic results**: typed columns (`id|integer`, `price|double`, `day|date`, ...), `getObject`, SQL `NULL`,
   `getColumns` and the other metadata used by tools – [sections 9–10](FEATURES.md#9-csv-format-reference).
 * **Boomi support** through Dynamic Process Properties, with no dependency on Boomi – [section 11](FEATURES.md#11-running-inside-boomi).

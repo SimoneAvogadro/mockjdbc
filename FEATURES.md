@@ -19,7 +19,8 @@ This guide starts from the simplest case and builds up.
 9. [CSV format reference](#9-csv-format-reference)
 10. [Resolution order and good-to-know](#10-resolution-order-and-good-to-know)
 11. [Running inside Boomi](#11-running-inside-boomi) (with an [example](#example-unit-test-of-a-boomi-process))
-12. [API summary](#12-api-summary)
+12. [Simulating errors (SQLException)](#12-simulating-errors-sqlexception)
+13. [API summary](#13-api-summary)
 
 ---
 
@@ -344,6 +345,8 @@ Assert.assertEquals("hello,30", params);
 * Batches (`addBatch()` + `executeBatch()`) run the statement once per parameter set, each run captured as above (so
   the last set is the one you read); `executeBatch()` returns `1` per recognised statement, `0` otherwise.
 * A parameter that was not set is left empty (`{? = call my_proc(?)}` with only the second one set gives `,a`).
+* A write whose name has an error resource captures its parameters and then throws the error
+  ([section 12](#12-simulating-errors-sqlexception)).
 
 ---
 
@@ -541,7 +544,8 @@ For each executed query the driver tries, in this order:
 
 For a given name used for the n-th time, the data source is chosen as: `name?params#n` → `name?params` → `name#n` →
 `name` (in memory) → registered file → `/tables/name.csv`. Inside Boomi, each in-memory lookup that finds nothing also checks the matching Dynamic Process Property
-([section 11](#11-running-inside-boomi)).
+([section 11](#11-running-inside-boomi)). The resource found can also be an error resource, which makes the statement
+throw ([section 12](#12-simulating-errors-sqlexception)).
 
 Tips:
 
@@ -767,6 +771,9 @@ String params = ExecutionUtil.getDynamicProcessProperty("mockjdbc_users_params")
 The value is the same one returned by `MockJdbcDriver.getInMemoryTableResource("users_PARAMS")`, which keeps working
 as before. The numbered copies are set too: `mockjdbc_users_PARAMS#n` and `mockjdbc_users_params#n`.
 
+The message of an injected error is set the same way, as `mockjdbc_<name>_ERROR` and `mockjdbc_<name>_error`
+([section 12](#12-simulating-errors-sqlexception)).
+
 ### Example: unit test of a Boomi process
 
 ![Unit test of a Boomi process that reads and writes a database, using mockjdbc](docs/images/boomi-unit-test-example.webp)
@@ -815,7 +822,163 @@ has its own counters.
 
 ---
 
-## 12. API summary
+## 12. Simulating errors (SQLException)
+
+A mock can make a statement **fail** instead of returning data, to test how your code – or the Try/Catch of your Boomi
+process – reacts to a database error. A mock is an **error resource** when the first column of its header is the name
+of a `java.sql` exception; the first data row holds the message, the SQLState and the error code:
+
+```csv
+SQLException,SQLState,ErrorCode
+Deadlock victim,40001,1205
+```
+
+```java
+MockJdbcDriver.addInMemoryTableResource("orders",
+        "SQLException,SQLState,ErrorCode\n" +
+        "Deadlock victim,40001,1205");
+
+try {
+    connection.createStatement().executeQuery("SELECT * FROM orders");
+} catch (SQLException e) {
+    e.getMessage();     // "Deadlock victim"
+    e.getSQLState();    // "40001"
+    e.getErrorCode();   // 1205
+}
+```
+
+### The error resource
+
+* The first column holds the message; the other columns can only be `SQLState` and `ErrorCode`, in any order. Names are
+  case insensitive, spaces around them are ignored and a `|type` is accepted and ignored.
+* The supported classes, all in `java.sql`, are `SQLException`, `SQLNonTransientException`, `SQLDataException`,
+  `SQLFeatureNotSupportedException`, `SQLIntegrityConstraintViolationException`,
+  `SQLInvalidAuthorizationSpecException`, `SQLNonTransientConnectionException`, `SQLSyntaxErrorException`,
+  `SQLTransientException`, `SQLTimeoutException`, `SQLTransactionRollbackException`,
+  `SQLTransientConnectionException` and `SQLRecoverableException`. Each is built with the message, the SQLState and
+  the error code.
+* **The class written is the class thrown**, never derived from the SQLState: to test a
+  `catch (SQLIntegrityConstraintViolationException e)` the header must say `SQLIntegrityConstraintViolationException`.
+  Other names (`SQLWarning`, `DataTruncation`, vendor classes) are not error resources: such a header is read as the
+  columns of an ordinary table.
+* The values come from the **first data row**; later rows are ignored. An empty `SQLState` is `null`, an empty
+  `ErrorCode` is `0`. As for every mock a data row has as many values as the header (a short row is a CSV error, see
+  [section 9](#9-csv-format-reference), not an injected error); a message with commas or quotes goes between double
+  quotes.
+* **Default message.** A header-only resource, or an empty message, gives `Error injected by mockjdbc for '<name>'`,
+  where `<name>` is the name with its occurrence ([section 5](#repeated-use-of-the-same-resource-users1-users2)):
+  `orders#1` for the first use of `orders`, `dbo.orders#1` for a schema-qualified table (the counted name is the full
+  name, also when the resource is found under `orders`), `##STEP0` for a step.
+* **Invalid resource.** Any other column, or an `ErrorCode` that is not an integer, makes the statement throw a plain
+  `SQLException` that names the resource and the problem:
+  ```
+  Invalid error resource 'orders#1': column 'Severity' is not allowed, only SQLState and ErrorCode can follow the message
+  ```
+* An error resource is registered like any other mock, under any lookup name: in memory, as a Dynamic Process Property
+  ([section 11](#11-running-inside-boomi)), as a file, or as a `/tables/` CSV on the classpath or in a jar.
+
+### Which statement fails
+
+An error resource is found with the lookup of every mock ([section 10](#10-resolution-order-and-good-to-know)): the
+step ([section 5](#5-step-based-results-a-scripted-sequence)), the `-- QUERY_ID:`, the table (full name, then last
+part) or the stored procedure, then `name?params#n` → `name?params` → `name#n` → `name`.
+
+| Resource | Throws |
+|----------|--------|
+| `orders` | every statement on `orders` |
+| `orders#1` | the first statement on `orders` only |
+| `customers?C-42` | the statements bound to the parameter `C-42` |
+| `customers?C-42#2` | the second statement on `customers`, if bound to `C-42` |
+| `ecommerce.create-order-ws.insert-order` | the statement with that `-- QUERY_ID:` |
+| step `1` | the second statement of the test |
+
+```java
+// the first read of orders fails, the retry gets the data
+MockJdbcDriver.addInMemoryTableResource("orders#1",
+        "SQLTransactionRollbackException,SQLState,ErrorCode\nDeadlock victim,40001,1205");
+MockJdbcDriver.addInMemoryTableResource("orders", "id\n1\n2");
+```
+
+**Writes look up their name too.** INSERT, UPDATE, DELETE, procedure calls, writes with a `-- QUERY_ID:` and steps find
+an error resource as a query does. A data resource is still ignored by a write, but the lookup stops at the first
+resource it finds: a data resource that matches first hides the error for that statement. `dbo.orders` hides an error
+on `orders` (the full name is looked up first), and `orders?A` hides an error on `orders#1` for a statement bound to
+`A`.
+
+The error is thrown by `executeQuery`, `execute`, `executeUpdate` and `executeBatch` of a `PreparedStatement` and by a
+`CallableStatement`; a plain `Statement` throws it only from `executeQuery` (its `executeUpdate` and `execute` do
+nothing, as before). Preparing the statement, opening the connection, `commit`, `close` and the metadata calls never
+throw an injected error.
+
+### What an injected error leaves behind
+
+* **The counter advances** as for a successful statement, so `orders#1` can be the error and `orders#2` the data of a
+  retry.
+* **The parameters of a write are captured before the throw**, as a successful write captures them
+  (`orders_PARAMS`, `orders_PARAMS#n`, [section 6](#6-capturing-statement-parameters)): they tell what the process tried
+  to write. SELECTs and steps follow the usual rules.
+* **`<name>_ERROR` holds the message** of the latest error thrown for the name, and `<name>_ERROR#n` the one of its
+  n-th use (a step has no `#n`), e.g. `MockJdbcDriver.getInMemoryTableResource("orders_ERROR#1")`. They prove that the
+  injection fired. Inside Boomi they are also Dynamic Process Properties, as written and in lower case
+  (`mockjdbc_orders_ERROR`, `mockjdbc_orders_error`, plus the `#n` copies), never persisted, exactly like `_PARAMS`
+  ([Reading captured parameters in the process](#reading-captured-parameters-in-the-process)).
+
+### Batches
+
+The first row of a batch that fails stops it with a `BatchUpdateException`: its message, SQLState and error code are
+those of the declared exception, which is its cause, and `getUpdateCounts()` holds the counts of the rows before the
+failing one. The later rows are neither run nor captured, and the batch is cleared. With the rows `A`, `B`, `C` and an
+error on `orders?B`, the exception carries `{ 1 }`, `orders_PARAMS#2` is `B` and there is no `orders_PARAMS#3`.
+
+### Metadata and Database V2
+
+`getColumns`, `getProcedureColumns` and the other metadata calls **ignore error resources**, as if the resource were
+absent (no columns, no exception), so a tool that inspects a table before running a statement is not hit by the error.
+
+Database V2 reads the columns of the table from `<name>`. With Database V2 keep the header in `<name>` and put the error
+on `<name>#n` or `<name>?params`: `mockjdbc_orders` = `id|integer, customer` (header only) and `mockjdbc_orders#2` = the
+error resource. See [Database V2 operations](#database-v2-operations).
+
+### A lost connection
+
+mockjdbc has no connection state: an error resource never fails opening a connection, `commit` or `close`, and nothing
+marks a connection as broken. A database that goes away is an error resource with a connection class and an SQLState of
+class `08`:
+
+```csv
+SQLNonTransientConnectionException,SQLState,ErrorCode
+Communications link failure,08S01,0
+```
+
+Put it on the first statement that should fail **and on every later statement that must fail too**: each statement looks
+up its own resource (for example the steps `1`, `2`, ... of [section 5](#5-step-based-results-a-scripted-sequence)).
+The driver gives the SQLState `08` no special meaning: it is only the value that the code under test may look at.
+
+### Example: the Try/Catch of a Boomi process
+
+The process under test reads `orders` and then inserts into it, inside a Try/Catch. The test makes the insert (the
+second statement on `orders`) fail and checks the catch path:
+
+1. **Define the error.** A Message step produces the error resource (in a Message step the single quote is the escape
+   character, so a literal apostrophe is written `''`):
+   ```csv
+   SQLIntegrityConstraintViolationException,SQLState,ErrorCode
+   Duplicate entry ''C-1'' for key ''PRIMARY'',23000,1062
+   ```
+   A Set Properties step stores it in the Dynamic Process Property **`mockjdbc_orders#2`** (Current Data).
+2. **Run the process under test** with a Process Call: its insert throws.
+3. **Check the catch path.** The message is available as the document property *Base - Try/Catch Message*; a Decision
+   step compares it with the wildcard `*Duplicate entry*`, because the connector may add text around the message. The
+   Dynamic Process Property **`mockjdbc_orders_error`** holds exactly `Duplicate entry 'C-1' for key 'PRIMARY'`, which
+   proves that the error was injected.
+
+How the error reaches the process depends on the connector and its options, for example the *Return Application Error
+Responses* option of a Database V2 operation: run the test once and see what your connector does with it.
+`mockjdbc_orders_error` is set in every case.
+
+---
+
+## 13. API summary
 
 | Method | Purpose |
 |--------|---------|
@@ -823,6 +986,7 @@ has its own counters.
 | `addInMemoryTableResource(String name, InputStream csv)` | Same, reading the CSV from a stream |
 | `addInMemoryTableResource(int step, String csv)` | Register the result of the *n*-th statement |
 | `addInMemoryTableResource(int step, InputStream csv)` | Same, from a stream |
+| `addInMemoryTableResource(...)` with an exception name as first column | Register an error resource: the statement that finds it throws that `SQLException` ([section 12](#12-simulating-errors-sqlexception)); its message is read as `<name>_ERROR` |
 | `getInMemoryTableResource(String name)` | Read a resource, e.g. `<table>_PARAMS` after an INSERT/UPDATE/DELETE or `<proc>_PARAMS` after a procedure call |
 | `getInMemoryTableResourceForCurrentStep()` | Read the resource of the current step |
 | `addTableResource(String table, File csv)` | Register a CSV file for a table |

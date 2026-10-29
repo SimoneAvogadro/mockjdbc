@@ -4,11 +4,35 @@ Change Log
 Unreleased
 ----------------------------
 
+ * New: error resources. A mock whose CSV header starts with the simple name of a `java.sql` exception
+   (`SQLException`, `SQLIntegrityConstraintViolationException`, `SQLTimeoutException`, ... 13 classes) makes the
+   statement that finds it throw exactly that class, with the message, `SQLState` and `ErrorCode` of the first data row
+   (`SQLException,SQLState,ErrorCode` and `Deadlock victim,40001,1205`); without a message it is
+   `Error injected by mockjdbc for '<name>'`. An unknown column or an `ErrorCode` that is not an integer makes the
+   statement throw an `SQLException` that names the resource. The resource is found by the usual lookup (step,
+   `-- QUERY_ID:`, table, procedure, `name?params#n`, `name#n`, ...), so one occurrence or one parameter value can fail
+   while the others return data. INSERT, UPDATE, DELETE, procedure calls and steps now look up their name too (on a
+   write only an error resource matters). The error is thrown by `executeQuery`, `execute`, `executeUpdate` and
+   `executeBatch` of a `PreparedStatement`, by a `CallableStatement` and by `executeQuery` of a plain `Statement`. The
+   occurrence counter advances and the parameters of a write are captured before the throw; the message is recorded as
+   `<name>_ERROR` and `<name>_ERROR#n` (inside Boomi also as the Dynamic Process Properties `mockjdbc_<name>_ERROR` and
+   `mockjdbc_<name>_error`). A batch stops at the failing row with a `BatchUpdateException` (the counts of the earlier
+   rows, the declared exception as its cause). The metadata (`getColumns`, `getProcedureColumns`, ...) ignores error
+   resources
  * Tests: `JarReleaseTest` loads the driver as Boomi loads a Custom Library (a class loader of its own, a pooled
    thread that outlives it, no `close()`), uses every feature and fails if the class loader stays referenced or a jar
    of the library stays open (on Windows: cannot be deleted). It guards against the causes of the jar locking seen in
    Boomi: a registration in `DriverManager` inside Boomi, a driver object in a `ThreadLocal`, a jar resource read
    through a cached URL connection
+ * Tests: `InjectedErrorTest` covers error resources (thrown class and values, targeting by occurrence, parameters,
+   `-- QUERY_ID:` and step, default message, invalid resources, `_ERROR`, writes, `execute`, procedure calls,
+   schema-qualified tables, batches); `LocaleIndependenceTest` (class names with `I` under the Italian and Turkish
+   locales), `MockDatabaseMetaDataTest` (metadata ignores error resources) and `BoomiExecutionUtilTest` (`_ERROR` as
+   Dynamic Process Properties) add their checks. `JarReleaseTest` also runs an error resource, so the jar release
+   guard covers the feature
+ * Documentation: FEATURES.md section 12, "Simulating errors (SQLException)": the format, targeting, what an injected
+   error leaves behind, batches, metadata and Database V2, a lost connection and a Boomi Try/Catch example. The API
+   summary is now section 13; sections 1-11 keep their numbers
 
 Version 2.2.0 (2026-10-22)
 ----------------------------
