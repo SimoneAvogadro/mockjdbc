@@ -19,6 +19,7 @@ import java.sql.Date;
 import java.sql.Driver;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.sql.Statement;
 import java.sql.Time;
 import java.sql.Timestamp;
@@ -174,6 +175,7 @@ public final class JarReleaseTest {
 		properties.put("mockjdbc_calendar", "day\n29-Oct-26");
 		properties.put("mockjdbc_myproc", "in_id,out_name\nignored,Mario");
 		properties.put("mockjdbc_duplicates", "a,a\n1,2");
+		properties.put("mockjdbc_broken", "SQLTimeoutException,SQLState\nTimed out,HYT00");
 
 		URLClassLoader loader = new URLClassLoader(libraryJars(), runtime);
 		Thread thread = Thread.currentThread();
@@ -264,6 +266,16 @@ public final class JarReleaseTest {
 		} catch (Exception e) {
 			// only the error path matters here, not how it is reported
 		}
+
+		// an error resource: the driver builds the exception, and records its message as a Dynamic Process Property.
+		// The class is checked by name: it is a JDK class, so the comparison does not pin the library class loader
+		try {
+			firstValue(connection, "SELECT * FROM broken", "a");
+			Assert.fail("the error resource must make the query throw");
+		} catch (SQLException e) {
+			Assert.assertEquals("java.sql.SQLTimeoutException", e.getClass().getName());
+		}
+		Assert.assertEquals("Timed out", properties.get("mockjdbc_broken_error#1"));
 	}
 
 	/** the value of a column in the first row (also read through getObject), null if there is no row */

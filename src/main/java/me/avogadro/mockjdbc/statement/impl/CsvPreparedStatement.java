@@ -2,6 +2,7 @@ package me.avogadro.mockjdbc.statement.impl;
 
 import java.io.File;
 import java.math.BigDecimal;
+import java.sql.BatchUpdateException;
 import java.sql.Date;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
@@ -9,6 +10,7 @@ import java.sql.SQLException;
 import java.sql.Time;
 import java.sql.Timestamp;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
@@ -451,7 +453,9 @@ public class CsvPreparedStatement extends PreparedStatementAdapter {
 
 	/**
 	 * Runs {@link #executeUpdate()} once for every set of parameters added with {@link #addBatch()} (each run captures
-	 * its parameters as usual).
+	 * its parameters as usual). A row that throws (an error resource, see {@link InjectedError}) stops the batch: the
+	 * exception is thrown as the cause of a {@link BatchUpdateException}, with the update counts of the rows before it.
+	 * The later rows are not run. The batch is cleared in any case.
 	 */
 	@Override
 	public int[] executeBatch() throws SQLException {
@@ -459,7 +463,12 @@ public class CsvPreparedStatement extends PreparedStatementAdapter {
 		try {
 			for (int i = 0; i < results.length; i++) {
 				params = batch.get(i).clone();
-				results[i] = executeUpdate(sql);
+				try {
+					results[i] = executeUpdate(sql);
+				} catch (SQLException e) {
+					throw new BatchUpdateException(e.getMessage(), e.getSQLState(), e.getErrorCode(),
+							Arrays.copyOf(results, i), e);
+				}
 			}
 		} finally {
 			batch.clear();

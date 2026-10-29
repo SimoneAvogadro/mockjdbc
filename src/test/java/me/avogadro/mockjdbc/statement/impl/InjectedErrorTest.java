@@ -1,5 +1,6 @@
 package me.avogadro.mockjdbc.statement.impl;
 
+import java.sql.BatchUpdateException;
 import java.sql.CallableStatement;
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -620,5 +621,66 @@ public final class InjectedErrorTest {
 		Assert.assertTrue(error.getMessage(), error.getMessage().startsWith("Invalid error resource 'orders#1': "));
 		Assert.assertEquals("A", resource("orders_PARAMS#1"));
 		Assert.assertEquals(error.getMessage(), resource("orders_ERROR#1"));
+	}
+
+	@Test
+	public void testExecuteDeleteOnSchemaQualifiedTable() throws SQLException {
+		MockJdbcDriver.addInMemoryTableResource("orders", "SQLException,SQLState\nLocked,40001");
+		PreparedStatement statement = connection.prepareStatement("DELETE FROM dbo.orders WHERE id = ?");
+		statement.setString(1, "A");
+
+		SQLException error = executeThrownBy(statement);
+
+		// the query part finds the table through the FROM of the DELETE, the write part reuses that occurrence
+		Assert.assertEquals("Locked", error.getMessage());
+		Assert.assertEquals("40001", error.getSQLState());
+		Assert.assertEquals("A", resource("dbo.orders_PARAMS#1"));
+		Assert.assertEquals("Locked", resource("dbo.orders_ERROR#1"));
+		Assert.assertNull(resource("dbo.orders_PARAMS#2"));
+		Assert.assertNull(resource("dbo.orders_ERROR#2"));
+	}
+
+	@Test
+	public void testExecuteDeleteOnSchemaQualifiedTableDefaultMessage() throws SQLException {
+		MockJdbcDriver.addInMemoryTableResource("orders", "SQLException");
+		PreparedStatement statement = connection.prepareStatement("DELETE FROM dbo.orders WHERE id = ?");
+		statement.setString(1, "A");
+
+		SQLException error = executeThrownBy(statement);
+
+		Assert.assertEquals("Error injected by mockjdbc for 'dbo.orders#1'", error.getMessage());
+		Assert.assertEquals("A", resource("dbo.orders_PARAMS#1"));
+		Assert.assertEquals(error.getMessage(), resource("dbo.orders_ERROR#1"));
+		Assert.assertNull(resource("dbo.orders_PARAMS#2"));
+		Assert.assertNull(resource("dbo.orders_ERROR#2"));
+	}
+
+	@Test
+	public void testBatchStopsAtTheFailingRow() throws SQLException {
+		MockJdbcDriver.addInMemoryTableResource("orders?B",
+				"SQLIntegrityConstraintViolationException,SQLState,ErrorCode\nDup,23000,1062");
+		PreparedStatement statement = connection.prepareStatement("INSERT INTO orders (id) VALUES (?)");
+		for (String id : new String[] { "A", "B", "C" }) {
+			statement.setString(1, id);
+			statement.addBatch();
+		}
+
+		try {
+			statement.executeBatch();
+			Assert.fail("the second row must fail the batch");
+		} catch (BatchUpdateException e) {
+			Assert.assertArrayEquals("the counts of the rows before the failing one", new int[] { 1 },
+					e.getUpdateCounts());
+			Assert.assertEquals("Dup", e.getMessage());
+			Assert.assertEquals("23000", e.getSQLState());
+			Assert.assertEquals(1062, e.getErrorCode());
+			Assert.assertSame(SQLIntegrityConstraintViolationException.class, e.getCause().getClass());
+		}
+
+		Assert.assertEquals("A", resource("orders_PARAMS#1"));
+		Assert.assertEquals("B", resource("orders_PARAMS#2"));
+		Assert.assertNull("the rows after the failing one are not run", resource("orders_PARAMS#3"));
+		Assert.assertEquals("Dup", resource("orders_ERROR#2"));
+		Assert.assertEquals("the batch is cleared", 0, statement.executeBatch().length);
 	}
 }
