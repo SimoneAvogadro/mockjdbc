@@ -91,6 +91,11 @@ without a column list) is done (`SqlNames`, see FEATURES.md section 3a). Still n
   no registration in `DriverManager` inside Boomi. With these, after a forced GC one of the two driver class loaders
   was released (impossible with b12), but the runtime still keeps the removed jar open: the remaining reference is held
   by Boomi itself.
+* **Guarded by a test:** `JarReleaseTest` loads the library as Boomi does (a class loader of its own under a fake
+  runtime, a pooled thread that outlives it, no `close()`), uses every feature of the driver and fails if the class
+  loader stays referenced or a jar of the library stays open (checked on `/proc/self/fd` on Linux, by deleting the jars
+  on Windows). It catches a registration in `DriverManager` inside Boomi, a driver object in a `ThreadLocal` and a jar
+  resource read through a cached URL connection.
 * **Legacy:** Boomi does not add a removed jar to `ignored_jars.txt` of `userlib\database`, so the jar stays on the
   classpath and the cleanup never tries to delete it.
 * **Boomi cloud runtime:** the same happens there, where the runtime cannot be stopped or cleaned by the account. Seen in

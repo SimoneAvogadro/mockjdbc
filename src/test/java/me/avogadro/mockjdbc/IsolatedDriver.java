@@ -15,7 +15,7 @@ final class IsolatedDriver {
 	}
 
 	/** location (directory or jar) of the classes of the given class, null if not available */
-	private static URL locationOf(String className) {
+	static URL locationOf(String className) {
 		try {
 			return Class.forName(className).getProtectionDomain().getCodeSource().getLocation();
 		} catch (ClassNotFoundException e) {
@@ -41,7 +41,8 @@ final class IsolatedDriver {
 		return new URLClassLoader(urls.toArray(new URL[0]), platformClassLoader());
 	}
 
-	private static ClassLoader platformClassLoader() {
+	/** the parent of an isolated class loader: sees the JDK (java.sql included) but not the classpath */
+	static ClassLoader platformClassLoader() {
 		try {
 			return (ClassLoader) ClassLoader.class.getMethod("getPlatformClassLoader").invoke(null);
 		} catch (Exception e) {

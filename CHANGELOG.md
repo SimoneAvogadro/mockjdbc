@@ -1,6 +1,15 @@
 Change Log
 ==========
 
+Unreleased
+----------------------------
+
+ * Tests: `JarReleaseTest` loads the driver as Boomi loads a Custom Library (a class loader of its own, a pooled
+   thread that outlives it, no `close()`), uses every feature and fails if the class loader stays referenced or a jar
+   of the library stays open (on Windows: cannot be deleted). It guards against the causes of the jar locking seen in
+   Boomi: a registration in `DriverManager` inside Boomi, a driver object in a `ThreadLocal`, a jar resource read
+   through a cached URL connection
+
 Version 2.2.0 (2026-10-22)
 ----------------------------
 
